@@ -1,5 +1,5 @@
 // Copyright (c) 2020-2021 Julian "Jibb" Smart
-// Released under the MIT license. See https://github.com/JibbSmart/GamepadMotionHelpers/blob/master/LICENSE.md for more info
+// Released under the MIT license. See https://github.com/JibbSmart/GamepadMotionHelpers/blob/main/LICENSE for more info
 
 #define _USE_MATH_DEFINES
 #include <math.h>
