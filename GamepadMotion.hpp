@@ -44,6 +44,7 @@ namespace GamepadMotionHelpers
 		float z;
 
 		Vec();
+		Vec(float inValue);
 		Vec(float inX, float inY, float inZ);
 		void Set(float inX, float inY, float inZ);
 		float Length() const;
@@ -51,6 +52,9 @@ namespace GamepadMotionHelpers
 		Vec Normalized() const;
 		float Dot(const Vec& other) const;
 		Vec Cross(const Vec& other) const;
+		Vec Min(const Vec& other) const;
+		Vec Max(const Vec& other) const;
+		Vec Abs() const;
 		Vec& operator+=(const Vec& rhs);
 		friend Vec operator+(Vec lhs, const Vec& rhs);
 		Vec& operator-=(const Vec& rhs);
@@ -68,41 +72,53 @@ namespace GamepadMotionHelpers
 	{
 		Vec MinGyro;
 		Vec MaxGyro;
+		Vec MeanGyro;
 		Vec MinAccel;
 		Vec MaxAccel;
+		Vec MeanAccel;
 		int NumSamples;
 		float TimeSampled;
 
 		SensorMinMaxWindow();
 		void Reset(float remainder);
 		void AddSample(const Vec& inGyro, const Vec& inAccel, float deltaTime);
-		Vec GetMedianGyro();
+		Vec GetMidGyro();
+	};
+
+	// we want pairs because the balance will tell us if we have a gradient
+	struct SensorWindowPair
+	{
+		SensorMinMaxWindow A;
+		SensorMinMaxWindow B;
+		SensorMinMaxWindow* Current;
+
+		SensorWindowPair();
+		void Reset(float remainder);
+		void ChangeCurrent();
+		SensorMinMaxWindow* GetOther();
 	};
 
 	struct AutoCalibration
 	{
 		const int NumWindows = 2;
-		SensorMinMaxWindow MinMaxWindows[2];
+		SensorWindowPair MinMaxWindows[2];
 
 		AutoCalibration();
 		bool AddSample(const Vec& inGyro, const Vec& inAccel, float deltaTime);
 		void SetCalibrationData(GyroCalibration* calibrationData);
 
 	private:
-		float MinDeltaGyroX = 10.f;
-		float MinDeltaGyroY = 10.f;
-		float MinDeltaGyroZ = 10.f;
-		float MinDeltaAccelX = 10.f;
-		float MinDeltaAccelY = 10.f;
-		float MinDeltaAccelZ = 10.f;
+		Vec MinDeltaGyro = Vec(10.f);
+		Vec MinDeltaAccel = Vec(10.f);
 		float RecalibrateThreshold = 1.f;
 
-		const int MinAutoWindowSamples = 5;
-		const float MinAutoWindowTime = 1.f;
-		const float MaxRecalibrateThreshold = 1.5f;
-		const float MinClimbRate = 0.5f;
-		const float RecalibrateClimbRate = 0.5f;
-		const float RecalibrateDrop = 0.25f;
+		const int MinAutoWindowSamples = 10;
+		const float MinAutoWindowTime = 2.f;
+		const float MaxRecalibrateThreshold = 1.1f;
+		const float MinClimbRate = 0.1f;
+		const float RecalibrateClimbRate = 0.1f;
+		const float RecalibrateDrop = 0.1f;
+		const float MaxMeanError = 0.2f;
 
 		GyroCalibration* CalibrationData;
 	};
@@ -279,6 +295,13 @@ namespace GamepadMotionHelpers
 		z = 0.0f;
 	}
 
+	Vec::Vec(float inValue)
+	{
+		x = inValue;
+		y = inValue;
+		z = inValue;
+	}
+
 	Vec::Vec(float inX, float inY, float inZ)
 	{
 		x = inX;
@@ -399,6 +422,27 @@ namespace GamepadMotionHelpers
 			x * other.y - y * other.x);
 	}
 
+	Vec Vec::Min(const Vec& other) const
+	{
+		return Vec(x < other.x ? x : other.x,
+			y < other.y ? y : other.y,
+			z < other.z ? z : other.z);
+	}
+	
+	Vec Vec::Max(const Vec& other) const
+	{
+		return Vec(x > other.x ? x : other.x,
+			y > other.y ? y : other.y,
+			z > other.z ? z : other.z);
+	}
+
+	Vec Vec::Abs() const
+	{
+		return Vec(x > 0 ? x : -x,
+			y > 0 ? y : -y,
+			z > 0 ? z : -z);
+	}
+
 	Motion::Motion()
 	{
 		Reset();
@@ -445,30 +489,8 @@ namespace GamepadMotionHelpers
 			for (int idx = 1; idx < numGravSamples; idx++)
 			{
 				Vec thisSample = GravDirectionSamples[(LastGravityIdx + idx) % NumGravDirectionSamples];
-				if (thisSample.x > gravityMax.x)
-				{
-					gravityMax.x = thisSample.x;
-				}
-				if (thisSample.y > gravityMax.y)
-				{
-					gravityMax.y = thisSample.y;
-				}
-				if (thisSample.z > gravityMax.z)
-				{
-					gravityMax.z = thisSample.z;
-				}
-				if (thisSample.x < gravityMin.x)
-				{
-					gravityMin.x = thisSample.x;
-				}
-				if (thisSample.y < gravityMin.y)
-				{
-					gravityMin.y = thisSample.y;
-				}
-				if (thisSample.y < gravityMin.y)
-				{
-					gravityMin.z = thisSample.z;
-				}
+				gravityMin = gravityMin.Min(thisSample);
+				gravityMax = gravityMax.Max(thisSample);
 			}
 			const Vec gravityBoxSize = gravityMax - gravityMin;
 			//printf(" Gravity Box Size: %.4f _ ", gravityBoxSize.Length());
@@ -540,74 +562,56 @@ namespace GamepadMotionHelpers
 		{
 			MaxGyro = inGyro;
 			MinGyro = inGyro;
+			MeanGyro = inGyro;
 			MaxAccel = inAccel;
 			MinAccel = inAccel;
+			MeanAccel = inAccel;
 			NumSamples = 1;
 			TimeSampled += deltaTime;
 			return;
 		}
 
-		if (inGyro.x > MaxGyro.x)
-		{
-			MaxGyro.x = inGyro.x;
-		}
-		else if (inGyro.x < MinGyro.x)
-		{
-			MinGyro.x = inGyro.x;
-		}
-
-		if (inGyro.y > MaxGyro.y)
-		{
-			MaxGyro.y = inGyro.y;
-		}
-		else if (inGyro.y < MinGyro.y)
-		{
-			MinGyro.y = inGyro.y;
-		}
-
-		if (inGyro.z > MaxGyro.z)
-		{
-			MaxGyro.z = inGyro.z;
-		}
-		else if (inGyro.z < MinGyro.z)
-		{
-			MinGyro.z = inGyro.z;
-		}
-
-		if (inAccel.x > MaxAccel.x)
-		{
-			MaxAccel.x = inAccel.x;
-		}
-		else if (inAccel.x < MinAccel.x)
-		{
-			MinAccel.x = inAccel.x;
-		}
-
-		if (inAccel.y > MaxAccel.y)
-		{
-			MaxAccel.y = inAccel.y;
-		}
-		else if (inAccel.y < MinAccel.y)
-		{
-			MinAccel.y = inAccel.y;
-		}
-
-		if (inAccel.z > MaxAccel.z)
-		{
-			MaxAccel.z = inAccel.z;
-		}
-		else if (inAccel.z < MinAccel.z)
-		{
-			MinAccel.z = inAccel.z;
-		}
+		MaxGyro = MaxGyro.Max(inGyro);
+		MinGyro = MinGyro.Min(inGyro);
+		MaxAccel = MaxAccel.Max(inAccel);
+		MinAccel = MinAccel.Min(inAccel);
 
 		NumSamples++;
 		TimeSampled += deltaTime;
+
+		// https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
+		Vec delta = inGyro - MeanGyro;
+		MeanGyro += delta * (1.f / NumSamples);
+		delta = inAccel - MeanAccel;
+		MeanAccel += delta * (1.f / NumSamples);
 	}
 
-	Vec SensorMinMaxWindow::GetMedianGyro()
+	Vec SensorMinMaxWindow::GetMidGyro()
 	{
-		return (MaxGyro + MinGyro) * 0.5f;
+		//return (MaxGyro + MinGyro) * 0.5f;
+		return MeanGyro;
+	}
+
+	SensorWindowPair::SensorWindowPair()
+	{
+		Reset(0.f);
+	}
+
+	void SensorWindowPair::Reset(float remainder)
+	{
+		Current = &A;
+		A.Reset(remainder);
+		B.Reset(0.f);
+	}
+
+	void SensorWindowPair::ChangeCurrent()
+	{
+		Current = GetOther();
+	}
+
+	SensorMinMaxWindow* SensorWindowPair::GetOther()
+	{
+		return Current == &A ? &B : &A;
 	}
 
 	AutoCalibration::AutoCalibration()
@@ -616,67 +620,118 @@ namespace GamepadMotionHelpers
 		for (int Idx = 0; Idx < NumWindows; Idx++)
 		{
 			// -1/x, -2/x, -3/x, etc
-			MinMaxWindows[Idx].TimeSampled = MinAutoWindowTime * (-Idx / (float)NumWindows);
+			MinMaxWindows[Idx].A.TimeSampled = MinAutoWindowTime * (-Idx / (float)NumWindows);
+			MinMaxWindows[Idx].B.TimeSampled = 0.f;
 		}
 	}
 
 	bool AutoCalibration::AddSample(const Vec& inGyro, const Vec& inAccel, float deltaTime)
 	{
+		if ((inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f) ||
+			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
+		{
+			// zeroes are almost certainly not valid inputs
+			return false;
+		}
+
 		bool calibrated = false;
-		MinDeltaGyroX += MinClimbRate * deltaTime;
-		MinDeltaGyroY += MinClimbRate * deltaTime;
-		MinDeltaGyroZ += MinClimbRate * deltaTime;
-		MinDeltaAccelX += MinClimbRate * deltaTime;
-		MinDeltaAccelY += MinClimbRate * deltaTime;
-		MinDeltaAccelZ += MinClimbRate * deltaTime;
+		const Vec climbThisTick = Vec(MinClimbRate * deltaTime);
+		MinDeltaGyro += climbThisTick;
+		MinDeltaAccel += climbThisTick;
 
 		RecalibrateThreshold += RecalibrateClimbRate * deltaTime;
 		if (RecalibrateThreshold > MaxRecalibrateThreshold) RecalibrateThreshold = MaxRecalibrateThreshold;
 
 		for (int Idx = 0; Idx < NumWindows; Idx++)
 		{
-			SensorMinMaxWindow* thisSample = &MinMaxWindows[Idx];
-			SensorMinMaxWindow* otherSample = &MinMaxWindows[(Idx + NumWindows - 1) % NumWindows];
+			SensorWindowPair* thisPair = &MinMaxWindows[Idx];
+			const SensorWindowPair* otherPair = &MinMaxWindows[(Idx + NumWindows - 1) % NumWindows];
+			SensorMinMaxWindow* thisSample = thisPair->Current;
 			thisSample->AddSample(inGyro, inAccel, deltaTime);
-			if (thisSample->NumSamples < MinAutoWindowSamples || thisSample->TimeSampled < MinAutoWindowTime)
+			if (thisSample == &thisPair->A &&
+				(thisSample->NumSamples >= MinAutoWindowSamples / 2 && thisSample->TimeSampled >= MinAutoWindowTime / 2.f))
+			{
+				thisPair->ChangeCurrent();
+				continue;
+			}
+			else if (thisSample->NumSamples < MinAutoWindowSamples || thisSample->TimeSampled < MinAutoWindowTime)
 			{
 				continue;
 			}
 
+			const SensorMinMaxWindow* otherSample = thisPair->GetOther();
+
+			const Vec maxGyro = thisSample->MaxGyro.Max(otherSample->MaxGyro);
+			const Vec minGyro = thisSample->MinGyro.Min(otherSample->MinGyro);
+			const Vec maxAccel = thisSample->MaxAccel.Max(otherSample->MaxAccel);
+			const Vec minAccel = thisSample->MinAccel.Min(otherSample->MinAccel);
+
 			// get deltas
-			Vec gyroDelta = thisSample->MaxGyro - thisSample->MinGyro;
-			Vec accelDelta = thisSample->MaxAccel - thisSample->MinAccel;
+			const Vec gyroDelta = maxGyro - minGyro;
+			const Vec accelDelta = maxAccel - minAccel;
 
-			if (gyroDelta.x < MinDeltaGyroX) MinDeltaGyroX = gyroDelta.x;
-			if (gyroDelta.y < MinDeltaGyroY) MinDeltaGyroY = gyroDelta.y;
-			if (gyroDelta.z < MinDeltaGyroZ) MinDeltaGyroZ = gyroDelta.z;
-			if (accelDelta.x < MinDeltaAccelX) MinDeltaAccelX = accelDelta.x;
-			if (accelDelta.y < MinDeltaAccelY) MinDeltaAccelY = accelDelta.y;
-			if (accelDelta.z < MinDeltaAccelZ) MinDeltaAccelZ = accelDelta.z;
+			MinDeltaGyro = MinDeltaGyro.Min(gyroDelta);
+			MinDeltaAccel = MinDeltaAccel.Min(accelDelta);
 
-			if (gyroDelta.x < MinDeltaGyroX * RecalibrateThreshold &&
-				gyroDelta.x < MinDeltaGyroY * RecalibrateThreshold &&
-				gyroDelta.x < MinDeltaGyroZ * RecalibrateThreshold &&
-				accelDelta.x < MinDeltaAccelX * RecalibrateThreshold &&
-				accelDelta.x < MinDeltaAccelY * RecalibrateThreshold &&
-				accelDelta.x < MinDeltaAccelZ * RecalibrateThreshold)
+			// each window is split into 2 halves. If the controller is truly still, each half will have similar properties
+			Vec gyroMeanDelta = (thisSample->MeanGyro - otherSample->MeanGyro).Abs();
+			Vec accelMeanDelta = (thisSample->MeanAccel - otherSample->MeanAccel).Abs();
+
+			const Vec gyroMeanError = gyroDelta * MaxMeanError;
+			const Vec accelMeanError = accelDelta * MaxMeanError;
+
+			bool isFlat = true;
+			bool isNarrow = true;
+
+			printf("\tgyro mean error: %.4f, %.4f, %.4f | gyro mean delta: %.4f, %.4f, %.4f\n",
+					accelMeanError.x, accelMeanError.y, accelMeanError.z,
+					gyroMeanDelta.x, gyroMeanDelta.y, gyroMeanDelta.z);
+
+			// check for consistency within the window
+			if (gyroMeanDelta.x > gyroMeanError.x || gyroMeanDelta.y > gyroMeanError.y || gyroMeanDelta.z > gyroMeanError.z ||
+				accelMeanDelta.x > accelMeanError.x || accelMeanDelta.y > accelMeanError.y || accelMeanDelta.z > accelMeanError.z)
 			{
-				printf("Recalibrating... with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.2f, %.2f, %.2f\n",
+				printf("Too much flux across window: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
 					gyroDelta.x, gyroDelta.y, gyroDelta.z,
 					accelDelta.x, accelDelta.y, accelDelta.z);
+				isFlat = false;
+			}
+
+			// check that all inputs are below appropriate thresholds to be considered "still"
+			if (gyroDelta.x > MinDeltaGyro.x * RecalibrateThreshold ||
+				gyroDelta.y > MinDeltaGyro.y * RecalibrateThreshold ||
+				gyroDelta.z > MinDeltaGyro.z * RecalibrateThreshold ||
+				accelDelta.x > MinDeltaAccel.x * RecalibrateThreshold ||
+				accelDelta.y > MinDeltaAccel.y * RecalibrateThreshold ||
+				accelDelta.z > MinDeltaAccel.z * RecalibrateThreshold)
+			{
+				if (isFlat)
+				{
+					printf("Too shaky: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
+						gyroDelta.x, gyroDelta.y, gyroDelta.z,
+						accelDelta.x, accelDelta.y, accelDelta.z);
+				}
+				isNarrow = false;
+			}
+
+			if (isFlat && isNarrow)
+			{
+				printf("Recalibrating... with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
+				gyroDelta.x, gyroDelta.y, gyroDelta.z,
+				accelDelta.x, accelDelta.y, accelDelta.z);
 
 				RecalibrateThreshold -= RecalibrateDrop;
 				if (RecalibrateThreshold < 1.f) RecalibrateThreshold = 1.f;
 
 				if (CalibrationData != nullptr)
 				{
-					Vec calibratedGyro = thisSample->GetMedianGyro();
+					Vec calibratedGyro = (thisPair->A.GetMidGyro() + thisPair->B.GetMidGyro()) * 0.5f;
 
 					CalibrationData->X = calibratedGyro.x;
 					CalibrationData->Y = calibratedGyro.y;
 					CalibrationData->Z = calibratedGyro.z;
 
-					CalibrationData->AccelMagnitude = (thisSample->MaxAccel + thisSample->MinAccel).Length() * 0.5;
+					CalibrationData->AccelMagnitude = (thisPair->A.MeanAccel + thisPair->B.MeanAccel).Length() * 0.5f;
 
 					CalibrationData->NumSamples = 1;
 
@@ -684,13 +739,14 @@ namespace GamepadMotionHelpers
 				}
 			}
 
-			if (otherSample->TimeSampled + deltaTime >= MinAutoWindowTime)
+			const float otherTimeSampled = otherPair->A.TimeSampled + otherPair->B.TimeSampled;
+			if (otherTimeSampled + deltaTime >= MinAutoWindowTime)
 			{
-				thisSample->Reset(MinAutoWindowTime / (float)NumWindows);
+				thisPair->Reset(MinAutoWindowTime / (float)NumWindows);
 			}
 			else
 			{
-				thisSample->Reset(otherSample->TimeSampled - (MinAutoWindowTime / (float)NumWindows)); // keep in sync with other windows
+				thisPair->Reset(otherTimeSampled - (MinAutoWindowTime / (float)NumWindows)); // keep in sync with other windows
 			}
 		}
 
@@ -815,7 +871,7 @@ void GamepadMotion::SetCalibrationOffset(float xOffset, float yOffset, float zOf
 	}
 	else
 	{
-		GyroCalibration.AccelMagnitude = weight;
+		GyroCalibration.AccelMagnitude = (float)weight;
 	}
 
 	GyroCalibration.NumSamples = weight;
@@ -862,7 +918,7 @@ void GamepadMotion::GetCalibratedSensor(float& gyroOffsetX, float& gyroOffsetY, 
 		return;
 	}
 
-	float inverseSamples = 1.f / GyroCalibration.NumSamples;
+	const float inverseSamples = 1.f / GyroCalibration.NumSamples;
 	gyroOffsetX = GyroCalibration.X * inverseSamples;
 	gyroOffsetY = GyroCalibration.Y * inverseSamples;
 	gyroOffsetZ = GyroCalibration.Z * inverseSamples;
