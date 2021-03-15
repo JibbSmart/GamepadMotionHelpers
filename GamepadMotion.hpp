@@ -115,10 +115,10 @@ namespace GamepadMotionHelpers
 		const int MinAutoWindowSamples = 10;
 		const float MinAutoWindowTime = 2.f;
 		const float MaxRecalibrateThreshold = 1.1f;
-		const float MinClimbRate = 0.1f;
+		const float MinClimbRate = 0.2f;
 		const float RecalibrateClimbRate = 0.1f;
 		const float RecalibrateDrop = 0.1f;
-		const float MaxMeanError = 0.2f;
+		const float MaxMeanError = 0.4f;
 
 		GyroCalibration* CalibrationData;
 	};
@@ -683,17 +683,17 @@ namespace GamepadMotionHelpers
 			bool isFlat = true;
 			bool isNarrow = true;
 
-			printf("\tgyro mean error: %.4f, %.4f, %.4f | gyro mean delta: %.4f, %.4f, %.4f\n",
-					accelMeanError.x, accelMeanError.y, accelMeanError.z,
-					gyroMeanDelta.x, gyroMeanDelta.y, gyroMeanDelta.z);
+			//printf("\tgyro mean error: %.4f, %.4f, %.4f | gyro mean delta: %.4f, %.4f, %.4f\n",
+			//		accelMeanError.x, accelMeanError.y, accelMeanError.z,
+			//		gyroMeanDelta.x, gyroMeanDelta.y, gyroMeanDelta.z);
 
 			// check for consistency within the window
 			if (gyroMeanDelta.x > gyroMeanError.x || gyroMeanDelta.y > gyroMeanError.y || gyroMeanDelta.z > gyroMeanError.z ||
 				accelMeanDelta.x > accelMeanError.x || accelMeanDelta.y > accelMeanError.y || accelMeanDelta.z > accelMeanError.z)
 			{
-				printf("Too much flux across window: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
-					gyroDelta.x, gyroDelta.y, gyroDelta.z,
-					accelDelta.x, accelDelta.y, accelDelta.z);
+				//printf("Too much flux across window: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
+				//	gyroDelta.x, gyroDelta.y, gyroDelta.z,
+				//	accelDelta.x, accelDelta.y, accelDelta.z);
 				isFlat = false;
 			}
 
@@ -707,9 +707,9 @@ namespace GamepadMotionHelpers
 			{
 				if (isFlat)
 				{
-					printf("Too shaky: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
-						gyroDelta.x, gyroDelta.y, gyroDelta.z,
-						accelDelta.x, accelDelta.y, accelDelta.z);
+					//printf("Too shaky: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
+					//	gyroDelta.x, gyroDelta.y, gyroDelta.z,
+					//	accelDelta.x, accelDelta.y, accelDelta.z);
 				}
 				isNarrow = false;
 			}
