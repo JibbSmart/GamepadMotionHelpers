@@ -106,11 +106,14 @@ namespace GamepadMotionHelpers
 		SensorWindowPair MinMaxWindows[2];
 		Vec SmoothedAngularVelocityGyro;
 		Vec SmoothedAngularVelocityAccel;
+		Vec SmoothedPreviousAccel;
 		Vec PreviousAccel;
 
 		AutoCalibration();
-		bool AddSampleSimple(const Vec& inGyro, const Vec& inAccel, float deltaTime);
-		bool AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, float deltaTime);
+		bool AddSampleStillness(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime);
+		void NoSampleStillness();
+		bool AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime);
+		void NoSampleSensorFusion();
 		void SetCalibrationData(GyroCalibration* calibrationData);
 
 	private:
@@ -127,10 +130,11 @@ namespace GamepadMotionHelpers
 		const float MaxMeanError = 0.4f;
 
 		const float SmoothingQuickness = 5.f;
-		const float AngularAccelerationThreshold = 900.f;
+		const float AngularAccelerationThreshold = 20.f;
 		const float SensorFusionCalibrationEaseInTime = 3.f;
 		const float SensorFusionCalibrationQuickness = 10.f;
-
+		
+		float SensorFusionSkippedTime = 0.f;
 		float TimeSteady = 0.f;
 
 		GyroCalibration* CalibrationData;
@@ -161,12 +165,39 @@ namespace GamepadMotionHelpers
 // Gyro units should be degrees per second. Accelerometer should be Gs (approx. 9.8m/s^2 = 1G). If you're using
 // radians per second, meters per second squared, etc, conversion should be simple.
 
-enum class CalibrationMode
+enum CalibrationMode
 {
-	Manual,
-	Stillness,
-	SensorFusion,
+	Manual = 0,
+	Stillness = 1,
+	SensorFusion = 2,
 };
+
+// https://stackoverflow.com/a/1448478/1130520
+inline CalibrationMode operator|(CalibrationMode a, CalibrationMode b)
+{
+    return static_cast<CalibrationMode>(static_cast<int>(a) | static_cast<int>(b));
+}
+
+inline CalibrationMode operator&(CalibrationMode a, CalibrationMode b)
+{
+    return static_cast<CalibrationMode>(static_cast<int>(a) & static_cast<int>(b));
+}
+
+inline CalibrationMode operator~(CalibrationMode a)
+{
+	return static_cast<CalibrationMode>(~static_cast<int>(a));
+}
+
+// https://stackoverflow.com/a/23152590/1130520
+inline CalibrationMode& operator|=(CalibrationMode& a, CalibrationMode b)
+{
+	return (CalibrationMode&)((int&)(a) |= static_cast<int>(b));
+}
+
+inline CalibrationMode& operator&=(CalibrationMode& a, CalibrationMode b)
+{
+	return (CalibrationMode&)((int&)(a) &= static_cast<int>(b));
+}
 
 class GamepadMotion
 {
@@ -651,7 +682,7 @@ namespace GamepadMotionHelpers
 		}
 	}
 
-	bool AutoCalibration::AddSampleSimple(const Vec& inGyro, const Vec& inAccel, float deltaTime)
+	bool AutoCalibration::AddSampleStillness(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
 	{
 		if ((inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f) ||
 			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
@@ -753,9 +784,11 @@ namespace GamepadMotionHelpers
 				{
 					Vec calibratedGyro = (thisPair->A.GetMidGyro() + thisPair->B.GetMidGyro()) * 0.5f;
 
-					CalibrationData->X = calibratedGyro.x;
-					CalibrationData->Y = calibratedGyro.y;
-					CalibrationData->Z = calibratedGyro.z;
+					Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
+
+					CalibrationData->X = (inOutVecMask.x != 0) ? calibratedGyro.x : oldGyroBias.x;
+					CalibrationData->Y = (inOutVecMask.y != 0) ? calibratedGyro.y : oldGyroBias.y;
+					CalibrationData->Z = (inOutVecMask.z != 0) ? calibratedGyro.z : oldGyroBias.z;
 
 					CalibrationData->AccelMagnitude = (thisPair->A.MeanAccel + thisPair->B.MeanAccel).Length() * 0.5f;
 
@@ -779,20 +812,54 @@ namespace GamepadMotionHelpers
 		return calibrated;
 	}
 
-	bool AutoCalibration::AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, float deltaTime)
+	void AutoCalibration::NoSampleStillness()
 	{
-		if ((inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f) ||
-			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
+		for (int Idx = 0; Idx < NumWindows; Idx++)
 		{
-			// all zeroes are almost certainly not valid inputs
-			return false;
+			MinMaxWindows[Idx].Reset(0.f);
 		}
+	}
 
+	bool AutoCalibration::AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
+	{
 		if (deltaTime <= 0.f)
 		{
 			return false;
 		}
 
+		if ((inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f) ||
+			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
+		{
+			// all zeroes are almost certainly not valid inputs
+			TimeSteady = 0.f;
+			SensorFusionSkippedTime = 0.f;
+			PreviousAccel = inAccel;
+			SmoothedPreviousAccel = inAccel;
+			SmoothedAngularVelocityGyro = GamepadMotionHelpers::Vec();
+			SmoothedAngularVelocityAccel = GamepadMotionHelpers::Vec();
+			return false;
+		}
+
+		if (PreviousAccel.x == 0.f && PreviousAccel.y == 0.f && PreviousAccel.z == 0.f)
+		{
+			TimeSteady = 0.f;
+			SensorFusionSkippedTime = 0.f;
+			PreviousAccel = inAccel;
+			SmoothedPreviousAccel = inAccel;
+			SmoothedAngularVelocityGyro = GamepadMotionHelpers::Vec();
+			SmoothedAngularVelocityAccel = GamepadMotionHelpers::Vec();
+			return false;
+		}
+
+		// in case the controller state hasn't updated between samples
+		if (inAccel.x == PreviousAccel.x && inAccel.y == PreviousAccel.y && inAccel.z == PreviousAccel.z)
+		{
+			SensorFusionSkippedTime += deltaTime;
+			return false;
+		}
+
+		deltaTime += SensorFusionSkippedTime;
+		SensorFusionSkippedTime = 0.f;
 		bool calibrated = false;
 		
 		// TODO: soft-tiered smoothing
@@ -810,8 +877,8 @@ namespace GamepadMotionHelpers
 		const float gyroAccelerationMag = (SmoothedAngularVelocityGyro - previousGyro).Length() / deltaTime;
 		const float directness = min(max(0.f, (gyroAccelerationMag - AngularAccelerationThreshold * 0.5f) / (AngularAccelerationThreshold * 0.5f)), 1.f);
 		// get angle between old and new accel
-		const Vec previousNormal = PreviousAccel.Normalized();
-		const Vec thisAccel = inAccel.Lerp(PreviousAccel, smoothingLerpFactor);
+		const Vec previousNormal = SmoothedPreviousAccel.Normalized();
+		const Vec thisAccel = inAccel.Lerp(SmoothedPreviousAccel, smoothingLerpFactor);
 		const Vec thisNormal = thisAccel.Normalized();
 		Vec angularVelocity = thisNormal.Cross(previousNormal);
 		const float crossLength = angularVelocity.Length();
@@ -831,21 +898,47 @@ namespace GamepadMotionHelpers
 		if (directness > 0.f || CalibrationData == nullptr)
 		{
 			TimeSteady = 0.f;
-			printf("No calibration due to acceleration of %.4f\n", gyroAccelerationMag);
+			//printf("No calibration due to acceleration of %.4f\n", gyroAccelerationMag);
 		}
 		else
 		{
 			TimeSteady = min(TimeSteady + deltaTime, SensorFusionCalibrationEaseInTime);
 			const float calibrationEaseIn = TimeSteady / SensorFusionCalibrationEaseInTime;
-			Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
+			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
 			// recalibrate over time proportional to the difference between the calculated bias and the current assumed bias
 			Vec newGyroBias = (SmoothedAngularVelocityGyro - SmoothedAngularVelocityAccel).Lerp(oldGyroBias, exp2f(-SensorFusionCalibrationQuickness * calibrationEaseIn * deltaTime));
 			// don't change bias in axes that can't be affected by the gravity direction
-			newGyroBias = newGyroBias.Lerp(oldGyroBias, thisNormal.Abs().Min(Vec(1.f, 1.f, 1.f)));
+			Vec axisCalibrationStrength = thisNormal.Abs();
+			if (axisCalibrationStrength.x > 0.7f)
+			{
+				axisCalibrationStrength.x = 1.f;
+			}
+			if (axisCalibrationStrength.y > 0.7f)
+			{
+				axisCalibrationStrength.y = 1.f;
+			}
+			if (axisCalibrationStrength.z > 0.7f)
+			{
+				axisCalibrationStrength.z = 1.f;
+			}
+			newGyroBias = newGyroBias.Lerp(oldGyroBias, axisCalibrationStrength.Min(Vec(1.f)));
 
-			CalibrationData->X = newGyroBias.x;
-			CalibrationData->Y = newGyroBias.y;
-			CalibrationData->Z = newGyroBias.z;
+			CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
+			CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
+			CalibrationData->Z = (inOutVecMask.z != 0) ? newGyroBias.z : oldGyroBias.z;
+
+			if (axisCalibrationStrength.x <= 0.7f)
+			{
+				inOutVecMask.x = 0;
+			}
+			if (axisCalibrationStrength.y <= 0.7f)
+			{
+				inOutVecMask.y = 0;
+			}
+			if (axisCalibrationStrength.z <= 0.7f)
+			{
+				inOutVecMask.z = 0;
+			}
 
 			CalibrationData->AccelMagnitude = thisAccel.Length();
 
@@ -856,13 +949,24 @@ namespace GamepadMotionHelpers
 			//printf("Recalibrating at a strength of %.4f\n", calibrationEaseIn);
 		}
 
-		PreviousAccel = thisAccel;
+		SmoothedPreviousAccel = thisAccel;
+		PreviousAccel = inAccel;
 
 		//printf("Gyro: %.4f, %.4f, %.4f | Accel: %.4f, %.4f, %.4f\n",
 		//	SmoothedAngularVelocityGyro.x, SmoothedAngularVelocityGyro.y, SmoothedAngularVelocityGyro.z,
 		//	SmoothedAngularVelocityAccel.x, SmoothedAngularVelocityAccel.y, SmoothedAngularVelocityAccel.z);
 
 		return calibrated;
+	}
+
+	void AutoCalibration::NoSampleSensorFusion()
+	{
+		TimeSteady = 0.f;
+		SensorFusionSkippedTime = 0.f;
+		PreviousAccel = GamepadMotionHelpers::Vec();
+		SmoothedPreviousAccel = GamepadMotionHelpers::Vec();
+		SmoothedAngularVelocityGyro = GamepadMotionHelpers::Vec();
+		SmoothedAngularVelocityAccel = GamepadMotionHelpers::Vec();
 	}
 
 	void AutoCalibration::SetCalibrationData(GyroCalibration* calibrationData)
@@ -895,20 +999,32 @@ void GamepadMotion::ProcessMotion(float gyroX, float gyroY, float gyroZ,
 
 	if (IsCalibrating)
 	{
+		// manual calibration
 		PushSensorSamples(gyroX, gyroY, gyroZ, accelMagnitude);
+		AutoCalibration.NoSampleSensorFusion();
+		AutoCalibration.NoSampleStillness();
 	}
 	else
 	{
-		switch (CurrentCalibrationMode)
+		// we only calibrate in axes that haven't already been calibrated by a previous step. To start, we're calibrating in All axes.
+		GamepadMotionHelpers::Vec vecMask = GamepadMotionHelpers::Vec(1.f);
+		
+		if (CurrentCalibrationMode & CalibrationMode::SensorFusion)
 		{
-		case CalibrationMode::Stillness:
-			AutoCalibration.AddSampleSimple(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), deltaTime);
-			break;
-		case CalibrationMode::SensorFusion:
-			AutoCalibration.AddSampleSensorFusion(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), deltaTime);
-			break;
-		default:
-			break;
+			AutoCalibration.AddSampleSensorFusion(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), vecMask, deltaTime);
+		}
+		else
+		{
+			AutoCalibration.NoSampleSensorFusion();
+		}
+
+		if (CurrentCalibrationMode & CalibrationMode::Stillness)
+		{
+			AutoCalibration.AddSampleStillness(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), vecMask, deltaTime);
+		}
+		else
+		{
+			AutoCalibration.NoSampleStillness();
 		}
 	}
 
