@@ -87,23 +87,9 @@ namespace GamepadMotionHelpers
 		Vec GetMidGyro();
 	};
 
-	// we want pairs because the balance will tell us if we have a gradient
-	struct SensorWindowPair
-	{
-		SensorMinMaxWindow A;
-		SensorMinMaxWindow B;
-		SensorMinMaxWindow* Current;
-
-		SensorWindowPair();
-		void Reset(float remainder);
-		void ChangeCurrent();
-		SensorMinMaxWindow* GetOther();
-	};
-
 	struct AutoCalibration
 	{
-		const int NumWindows = 2;
-		SensorWindowPair MinMaxWindows[2];
+		SensorMinMaxWindow MinMaxWindow;
 		Vec SmoothedAngularVelocityGyro;
 		Vec SmoothedAngularVelocityAccel;
 		Vec SmoothedPreviousAccel;
@@ -123,19 +109,21 @@ namespace GamepadMotionHelpers
 
 		const int MinAutoWindowSamples = 10;
 		const float MinAutoWindowTime = 2.f;
-		const float MaxRecalibrateThreshold = 1.1f;
+		const float MaxRecalibrateThreshold = 1.25f;
 		const float MinClimbRate = 0.2f;
 		const float RecalibrateClimbRate = 0.1f;
 		const float RecalibrateDrop = 0.1f;
-		const float MaxMeanError = 0.4f;
 
 		const float SmoothingQuickness = 5.f;
 		const float AngularAccelerationThreshold = 20.f;
 		const float SensorFusionCalibrationEaseInTime = 3.f;
 		const float SensorFusionCalibrationQuickness = 10.f;
+		const float StillnessCalibrationEaseInTime = 3.f;
+		const float StillnessCalibrationQuickness = 10.f;
 		
 		float SensorFusionSkippedTime = 0.f;
-		float TimeSteady = 0.f;
+		float TimeSteadySensorFusion = 0.f;
+		float TimeSteadyStillness = 0.f;
 
 		GyroCalibration* CalibrationData;
 	};
@@ -162,7 +150,7 @@ namespace GamepadMotionHelpers
 // PlayStation controllers, which was what I was using when writing in this. But for the record, Z-up is
 // better for most games (XY ground-plane in 3D games simplifies using 2D vectors in navigation, for example).
 
-// Gyro units should be degrees per second. Accelerometer should be Gs (approx. 9.8m/s^2 = 1G). If you're using
+// Gyro units should be degrees per second. Accelerometer should be g-force (approx. 9.8 m/s^2 = 1 g). If you're using
 // radians per second, meters per second squared, etc, conversion should be simple.
 
 enum CalibrationMode
@@ -645,41 +633,14 @@ namespace GamepadMotionHelpers
 
 	Vec SensorMinMaxWindow::GetMidGyro()
 	{
-		//return (MaxGyro + MinGyro) * 0.5f;
 		return MeanGyro;
-	}
-
-	SensorWindowPair::SensorWindowPair()
-	{
-		Reset(0.f);
-	}
-
-	void SensorWindowPair::Reset(float remainder)
-	{
-		Current = &A;
-		A.Reset(remainder);
-		B.Reset(0.f);
-	}
-
-	void SensorWindowPair::ChangeCurrent()
-	{
-		Current = GetOther();
-	}
-
-	SensorMinMaxWindow* SensorWindowPair::GetOther()
-	{
-		return Current == &A ? &B : &A;
 	}
 
 	AutoCalibration::AutoCalibration()
 	{
 		CalibrationData = nullptr;
-		for (int Idx = 0; Idx < NumWindows; Idx++)
-		{
-			// -1/x, -2/x, -3/x, etc
-			MinMaxWindows[Idx].A.TimeSampled = MinAutoWindowTime * (-Idx / (float)NumWindows);
-			MinMaxWindows[Idx].B.TimeSampled = 0.f;
-		}
+		MinMaxWindow.TimeSampled = 0.f;
+		TimeSteadyStillness = 0.f;
 	}
 
 	bool AutoCalibration::AddSampleStillness(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
@@ -696,117 +657,68 @@ namespace GamepadMotionHelpers
 		MinDeltaGyro += climbThisTick;
 		MinDeltaAccel += climbThisTick;
 
-		RecalibrateThreshold += RecalibrateClimbRate * deltaTime;
-		if (RecalibrateThreshold > MaxRecalibrateThreshold) RecalibrateThreshold = MaxRecalibrateThreshold;
+		MinMaxWindow.AddSample(inGyro, inAccel, deltaTime);
 
-		for (int Idx = 0; Idx < NumWindows; Idx++)
+		// get deltas
+		const Vec gyroDelta = MinMaxWindow.MaxGyro - MinMaxWindow.MinGyro;
+		const Vec accelDelta = MinMaxWindow.MaxAccel - MinMaxWindow.MinAccel;
+
+		if (MinMaxWindow.NumSamples >= MinAutoWindowSamples && MinMaxWindow.TimeSampled >= MinAutoWindowTime)
 		{
-			SensorWindowPair* thisPair = &MinMaxWindows[Idx];
-			const SensorWindowPair* otherPair = &MinMaxWindows[(Idx + NumWindows - 1) % NumWindows];
-			SensorMinMaxWindow* thisSample = thisPair->Current;
-			thisSample->AddSample(inGyro, inAccel, deltaTime);
-			if (thisSample == &thisPair->A &&
-				(thisSample->NumSamples >= MinAutoWindowSamples / 2 && thisSample->TimeSampled >= MinAutoWindowTime / 2.f))
-			{
-				thisPair->ChangeCurrent();
-				continue;
-			}
-			else if (thisSample->NumSamples < MinAutoWindowSamples || thisSample->TimeSampled < MinAutoWindowTime)
-			{
-				continue;
-			}
-
-			const SensorMinMaxWindow* otherSample = thisPair->GetOther();
-
-			const Vec maxGyro = thisSample->MaxGyro.Max(otherSample->MaxGyro);
-			const Vec minGyro = thisSample->MinGyro.Min(otherSample->MinGyro);
-			const Vec maxAccel = thisSample->MaxAccel.Max(otherSample->MaxAccel);
-			const Vec minAccel = thisSample->MinAccel.Min(otherSample->MinAccel);
-
-			// get deltas
-			const Vec gyroDelta = maxGyro - minGyro;
-			const Vec accelDelta = maxAccel - minAccel;
-
 			MinDeltaGyro = MinDeltaGyro.Min(gyroDelta);
 			MinDeltaAccel = MinDeltaAccel.Min(accelDelta);
+		}
 
-			// each window is split into 2 halves. If the controller is truly still, each half will have similar properties
-			Vec gyroMeanDelta = (thisSample->MeanGyro - otherSample->MeanGyro).Abs();
-			Vec accelMeanDelta = (thisSample->MeanAccel - otherSample->MeanAccel).Abs();
-
-			const Vec gyroMeanError = gyroDelta * MaxMeanError;
-			const Vec accelMeanError = accelDelta * MaxMeanError;
-
-			bool isFlat = true;
-			bool isNarrow = true;
-
-			//printf("\tgyro mean error: %.4f, %.4f, %.4f | gyro mean delta: %.4f, %.4f, %.4f\n",
-			//		accelMeanError.x, accelMeanError.y, accelMeanError.z,
-			//		gyroMeanDelta.x, gyroMeanDelta.y, gyroMeanDelta.z);
-
-			// check for consistency within the window
-			if (gyroMeanDelta.x > gyroMeanError.x || gyroMeanDelta.y > gyroMeanError.y || gyroMeanDelta.z > gyroMeanError.z ||
-				accelMeanDelta.x > accelMeanError.x || accelMeanDelta.y > accelMeanError.y || accelMeanDelta.z > accelMeanError.z)
+		// check that all inputs are below appropriate thresholds to be considered "still"
+		if (gyroDelta.x <= MinDeltaGyro.x * RecalibrateThreshold &&
+			gyroDelta.y <= MinDeltaGyro.y * RecalibrateThreshold &&
+			gyroDelta.z <= MinDeltaGyro.z * RecalibrateThreshold &&
+			accelDelta.x <= MinDeltaAccel.x * RecalibrateThreshold &&
+			accelDelta.y <= MinDeltaAccel.y * RecalibrateThreshold &&
+			accelDelta.z <= MinDeltaAccel.z * RecalibrateThreshold)
+		{
+			if (CalibrationData != nullptr && MinMaxWindow.NumSamples >= MinAutoWindowSamples && MinMaxWindow.TimeSampled >= MinAutoWindowTime)
 			{
-				//printf("Too much flux across window: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
-				//	gyroDelta.x, gyroDelta.y, gyroDelta.z,
-				//	accelDelta.x, accelDelta.y, accelDelta.z);
-				isFlat = false;
-			}
-
-			// check that all inputs are below appropriate thresholds to be considered "still"
-			if (gyroDelta.x > MinDeltaGyro.x * RecalibrateThreshold ||
-				gyroDelta.y > MinDeltaGyro.y * RecalibrateThreshold ||
-				gyroDelta.z > MinDeltaGyro.z * RecalibrateThreshold ||
-				accelDelta.x > MinDeltaAccel.x * RecalibrateThreshold ||
-				accelDelta.y > MinDeltaAccel.y * RecalibrateThreshold ||
-				accelDelta.z > MinDeltaAccel.z * RecalibrateThreshold)
-			{
-				if (isFlat)
+				/*if (TimeSteadyStillness == 0.f)
 				{
-					//printf("Too shaky: with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
-					//	gyroDelta.x, gyroDelta.y, gyroDelta.z,
-					//	accelDelta.x, accelDelta.y, accelDelta.z);
-				}
-				isNarrow = false;
-			}
+					printf("Still!\n");
+				}/**/
 
-			if (isFlat && isNarrow)
-			{
-				//printf("Recalibrating... with gyro deltas: %.2f, %.2f, %.2f and accel deltas: %.3f, %.3f, %.3f\n",
-				//	gyroDelta.x, gyroDelta.y, gyroDelta.z,
-				//	accelDelta.x, accelDelta.y, accelDelta.z);
+				TimeSteadyStillness = min(TimeSteadyStillness + deltaTime, StillnessCalibrationEaseInTime);
+				const float calibrationEaseIn = TimeSteadyStillness / StillnessCalibrationEaseInTime;
 
-				RecalibrateThreshold -= RecalibrateDrop;
-				if (RecalibrateThreshold < 1.f) RecalibrateThreshold = 1.f;
+				const Vec calibratedGyro = MinMaxWindow.GetMidGyro();
 
-				if (CalibrationData != nullptr)
-				{
-					Vec calibratedGyro = (thisPair->A.GetMidGyro() + thisPair->B.GetMidGyro()) * 0.5f;
+				const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
+				const Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, exp2f(-StillnessCalibrationQuickness * calibrationEaseIn * deltaTime));
 
-					Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
+				CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
+				CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
+				CalibrationData->Z = (inOutVecMask.z != 0) ? newGyroBias.z : oldGyroBias.z;
 
-					CalibrationData->X = (inOutVecMask.x != 0) ? calibratedGyro.x : oldGyroBias.x;
-					CalibrationData->Y = (inOutVecMask.y != 0) ? calibratedGyro.y : oldGyroBias.y;
-					CalibrationData->Z = (inOutVecMask.z != 0) ? calibratedGyro.z : oldGyroBias.z;
+				CalibrationData->AccelMagnitude = MinMaxWindow.MeanAccel.Length();
+				CalibrationData->NumSamples = 1;
 
-					CalibrationData->AccelMagnitude = (thisPair->A.MeanAccel + thisPair->B.MeanAccel).Length() * 0.5f;
-
-					CalibrationData->NumSamples = 1;
-
-					calibrated = true;
-				}
-			}
-
-			const float otherTimeSampled = otherPair->A.TimeSampled + otherPair->B.TimeSampled;
-			if (otherTimeSampled + deltaTime >= MinAutoWindowTime)
-			{
-				thisPair->Reset(MinAutoWindowTime / (float)NumWindows);
+				calibrated = true;
 			}
 			else
 			{
-				thisPair->Reset(otherTimeSampled - (MinAutoWindowTime / (float)NumWindows)); // keep in sync with other windows
+				RecalibrateThreshold = min(RecalibrateThreshold + RecalibrateClimbRate * deltaTime, MaxRecalibrateThreshold);
 			}
+		}
+		else if (TimeSteadyStillness > 0.f)
+		{
+			//printf("Moved!\n");
+			RecalibrateThreshold -= RecalibrateDrop;
+			if (RecalibrateThreshold < 1.f) RecalibrateThreshold = 1.f;
+
+			TimeSteadyStillness = 0.f;
+			MinMaxWindow.Reset(0.f);
+		}
+		else
+		{
+			RecalibrateThreshold = min(RecalibrateThreshold + RecalibrateClimbRate * deltaTime, MaxRecalibrateThreshold);
+			MinMaxWindow.Reset(0.f);
 		}
 
 		return calibrated;
@@ -814,10 +726,7 @@ namespace GamepadMotionHelpers
 
 	void AutoCalibration::NoSampleStillness()
 	{
-		for (int Idx = 0; Idx < NumWindows; Idx++)
-		{
-			MinMaxWindows[Idx].Reset(0.f);
-		}
+		MinMaxWindow.Reset(0.f);
 	}
 
 	bool AutoCalibration::AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
@@ -831,7 +740,7 @@ namespace GamepadMotionHelpers
 			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
 		{
 			// all zeroes are almost certainly not valid inputs
-			TimeSteady = 0.f;
+			TimeSteadySensorFusion = 0.f;
 			SensorFusionSkippedTime = 0.f;
 			PreviousAccel = inAccel;
 			SmoothedPreviousAccel = inAccel;
@@ -842,7 +751,7 @@ namespace GamepadMotionHelpers
 
 		if (PreviousAccel.x == 0.f && PreviousAccel.y == 0.f && PreviousAccel.z == 0.f)
 		{
-			TimeSteady = 0.f;
+			TimeSteadySensorFusion = 0.f;
 			SensorFusionSkippedTime = 0.f;
 			PreviousAccel = inAccel;
 			SmoothedPreviousAccel = inAccel;
@@ -865,14 +774,8 @@ namespace GamepadMotionHelpers
 		// TODO: soft-tiered smoothing
 		// framerate independent lerp smoothing: https://www.gamasutra.com/blogs/ScottLembcke/20180404/316046/Improved_Lerp_Smoothing.php
 		const float smoothingLerpFactor = exp2f(-SmoothingQuickness * deltaTime);
-		//SmoothedAngularVelocityGyro += (inGyro - SmoothedAngularVelocityGyro) * (deltaForSmoothing);
 		// velocity from smoothed accel matches better if we also smooth gyro
-		//SmoothedAngularVelocityGyro = inGyro;
-		Vec previousGyro = SmoothedAngularVelocityGyro;
-		//const float gyroAccelerationMag = (inGyro - SmoothedAngularVelocityGyro).Length() / deltaTime;
-		// soft-tired smoothing: http://gyrowiki.jibbsmart.com/blog:tight-and-smooth:soft-tiered-smoothing
-		//const float directness = min(max(0.f, (gyroAccelerationMag - AngularAccelerationThreshold * 0.5f) / (AngularAccelerationThreshold * 0.5f)), 1.f);
-		//SmoothedAngularVelocityGyro = inGyro.Lerp(SmoothedAngularVelocityGyro, directness); // non-smoothed portion
+		const Vec previousGyro = SmoothedAngularVelocityGyro;
 		SmoothedAngularVelocityGyro = inGyro.Lerp(SmoothedAngularVelocityGyro, smoothingLerpFactor); // smooth what remains
 		const float gyroAccelerationMag = (SmoothedAngularVelocityGyro - previousGyro).Length() / deltaTime;
 		const float directness = min(max(0.f, (gyroAccelerationMag - AngularAccelerationThreshold * 0.5f) / (AngularAccelerationThreshold * 0.5f)), 1.f);
@@ -882,7 +785,6 @@ namespace GamepadMotionHelpers
 		const Vec thisNormal = thisAccel.Normalized();
 		Vec angularVelocity = thisNormal.Cross(previousNormal);
 		const float crossLength = angularVelocity.Length();
-		//const float angleChange = asinf(crossLength);
 		const float thisDotPrev = min(max(-1.f, thisNormal.Dot(previousNormal)), 1.f);
 		const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
 		const float anglePerSecond = angleChange / deltaTime;
@@ -890,20 +792,18 @@ namespace GamepadMotionHelpers
 		{
 			angularVelocity *= anglePerSecond / crossLength;
 		}
-		// smoothed
-		//SmoothedAngularVelocityAccel += (angularVelocity - SmoothedAngularVelocityAccel) * (deltaForSmoothing);
 		SmoothedAngularVelocityAccel = angularVelocity;
 
 		// apply corrections
 		if (directness > 0.f || CalibrationData == nullptr)
 		{
-			TimeSteady = 0.f;
+			TimeSteadySensorFusion = 0.f;
 			//printf("No calibration due to acceleration of %.4f\n", gyroAccelerationMag);
 		}
 		else
 		{
-			TimeSteady = min(TimeSteady + deltaTime, SensorFusionCalibrationEaseInTime);
-			const float calibrationEaseIn = TimeSteady / SensorFusionCalibrationEaseInTime;
+			TimeSteadySensorFusion = min(TimeSteadySensorFusion + deltaTime, SensorFusionCalibrationEaseInTime);
+			const float calibrationEaseIn = TimeSteadySensorFusion / SensorFusionCalibrationEaseInTime;
 			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
 			// recalibrate over time proportional to the difference between the calculated bias and the current assumed bias
 			Vec newGyroBias = (SmoothedAngularVelocityGyro - SmoothedAngularVelocityAccel).Lerp(oldGyroBias, exp2f(-SensorFusionCalibrationQuickness * calibrationEaseIn * deltaTime));
@@ -927,6 +827,7 @@ namespace GamepadMotionHelpers
 			CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
 			CalibrationData->Z = (inOutVecMask.z != 0) ? newGyroBias.z : oldGyroBias.z;
 
+			// prevent later stages of auto calibration from calibrating in the axes we successfully calibrated here
 			if (axisCalibrationStrength.x <= 0.7f)
 			{
 				inOutVecMask.x = 0;
@@ -961,7 +862,7 @@ namespace GamepadMotionHelpers
 
 	void AutoCalibration::NoSampleSensorFusion()
 	{
-		TimeSteady = 0.f;
+		TimeSteadySensorFusion = 0.f;
 		SensorFusionSkippedTime = 0.f;
 		PreviousAccel = GamepadMotionHelpers::Vec();
 		SmoothedPreviousAccel = GamepadMotionHelpers::Vec();
