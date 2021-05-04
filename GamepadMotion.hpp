@@ -114,7 +114,7 @@ namespace GamepadMotionHelpers
 		const float RecalibrateClimbRate = 0.1f;
 		const float RecalibrateDrop = 0.1f;
 
-		const float SmoothingQuickness = 5.f;
+		const float SmoothingQuickness = 2.f;
 		const float AngularAccelerationThreshold = 20.f;
 		const float SensorFusionCalibrationEaseInTime = 3.f;
 		const float SensorFusionCalibrationQuickness = 10.f;
@@ -645,8 +645,8 @@ namespace GamepadMotionHelpers
 
 	bool AutoCalibration::AddSampleStillness(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
 	{
-		if ((inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f) ||
-			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
+		if (inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f &&
+			inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f)
 		{
 			// zeroes are almost certainly not valid inputs
 			return false;
@@ -736,8 +736,8 @@ namespace GamepadMotionHelpers
 			return false;
 		}
 
-		if ((inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f) ||
-			(inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f))
+		if (inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f &&
+			inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f)
 		{
 			// all zeroes are almost certainly not valid inputs
 			TimeSteadySensorFusion = 0.f;
@@ -771,14 +771,12 @@ namespace GamepadMotionHelpers
 		SensorFusionSkippedTime = 0.f;
 		bool calibrated = false;
 		
-		// TODO: soft-tiered smoothing
 		// framerate independent lerp smoothing: https://www.gamasutra.com/blogs/ScottLembcke/20180404/316046/Improved_Lerp_Smoothing.php
 		const float smoothingLerpFactor = exp2f(-SmoothingQuickness * deltaTime);
 		// velocity from smoothed accel matches better if we also smooth gyro
 		const Vec previousGyro = SmoothedAngularVelocityGyro;
 		SmoothedAngularVelocityGyro = inGyro.Lerp(SmoothedAngularVelocityGyro, smoothingLerpFactor); // smooth what remains
 		const float gyroAccelerationMag = (SmoothedAngularVelocityGyro - previousGyro).Length() / deltaTime;
-		const float directness = min(max(0.f, (gyroAccelerationMag - AngularAccelerationThreshold * 0.5f) / (AngularAccelerationThreshold * 0.5f)), 1.f);
 		// get angle between old and new accel
 		const Vec previousNormal = SmoothedPreviousAccel.Normalized();
 		const Vec thisAccel = inAccel.Lerp(SmoothedPreviousAccel, smoothingLerpFactor);
@@ -795,13 +793,22 @@ namespace GamepadMotionHelpers
 		SmoothedAngularVelocityAccel = angularVelocity;
 
 		// apply corrections
-		if (directness > 0.f || CalibrationData == nullptr)
+		if (gyroAccelerationMag > AngularAccelerationThreshold || CalibrationData == nullptr)
 		{
+			/*if (TimeSteadySensorFusion > 0.f)
+			{
+				printf("Shaken!\n");
+			}/**/
 			TimeSteadySensorFusion = 0.f;
 			//printf("No calibration due to acceleration of %.4f\n", gyroAccelerationMag);
 		}
 		else
 		{
+			/*if (TimeSteadySensorFusion == 0.f)
+			{
+				printf("Steady!\n");
+			}/**/
+
 			TimeSteadySensorFusion = min(TimeSteadySensorFusion + deltaTime, SensorFusionCalibrationEaseInTime);
 			const float calibrationEaseIn = TimeSteadySensorFusion / SensorFusionCalibrationEaseInTime;
 			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
