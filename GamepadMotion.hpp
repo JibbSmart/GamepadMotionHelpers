@@ -117,9 +117,9 @@ namespace GamepadMotionHelpers
 		const float SmoothingQuickness = 2.f;
 		const float AngularAccelerationThreshold = 20.f;
 		const float SensorFusionCalibrationEaseInTime = 3.f;
-		const float SensorFusionCalibrationQuickness = 10.f;
+		const float SensorFusionCalibrationHalfTime = 0.1f;
 		const float StillnessCalibrationEaseInTime = 3.f;
-		const float StillnessCalibrationQuickness = 10.f;
+		const float StillnessCalibrationHalfTime = 0.1f;
 		
 		float SensorFusionSkippedTime = 0.f;
 		float TimeSteadySensorFusion = 0.f;
@@ -685,12 +685,13 @@ namespace GamepadMotionHelpers
 				}/**/
 
 				TimeSteadyStillness = min(TimeSteadyStillness + deltaTime, StillnessCalibrationEaseInTime);
-				const float calibrationEaseIn = TimeSteadyStillness / StillnessCalibrationEaseInTime;
+				const float calibrationEaseIn = StillnessCalibrationEaseInTime <= 0.f ? 1.f : TimeSteadyStillness / StillnessCalibrationEaseInTime;
 
 				const Vec calibratedGyro = MinMaxWindow.GetMidGyro();
 
 				const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
-				const Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, exp2f(-StillnessCalibrationQuickness * calibrationEaseIn * deltaTime));
+				const float stillnessLerpFactor = StillnessCalibrationHalfTime <= 0.f ? 1.f : exp2f(-calibrationEaseIn * deltaTime / StillnessCalibrationHalfTime);
+				const Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, stillnessLerpFactor);
 
 				CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
 				CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
@@ -810,10 +811,11 @@ namespace GamepadMotionHelpers
 			}/**/
 
 			TimeSteadySensorFusion = min(TimeSteadySensorFusion + deltaTime, SensorFusionCalibrationEaseInTime);
-			const float calibrationEaseIn = TimeSteadySensorFusion / SensorFusionCalibrationEaseInTime;
+			const float calibrationEaseIn = SensorFusionCalibrationEaseInTime <= 0.f ? 1.f : TimeSteadySensorFusion / SensorFusionCalibrationEaseInTime;
 			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
 			// recalibrate over time proportional to the difference between the calculated bias and the current assumed bias
-			Vec newGyroBias = (SmoothedAngularVelocityGyro - SmoothedAngularVelocityAccel).Lerp(oldGyroBias, exp2f(-SensorFusionCalibrationQuickness * calibrationEaseIn * deltaTime));
+			const float sensorFusionLerpFactor = SensorFusionCalibrationHalfTime <= 0.f ? 1.f : exp2f(-calibrationEaseIn * deltaTime / SensorFusionCalibrationHalfTime);
+			Vec newGyroBias = (SmoothedAngularVelocityGyro - SmoothedAngularVelocityAccel).Lerp(oldGyroBias, sensorFusionLerpFactor);
 			// don't change bias in axes that can't be affected by the gravity direction
 			Vec axisCalibrationStrength = thisNormal.Abs();
 			if (axisCalibrationStrength.x > 0.7f)
