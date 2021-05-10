@@ -48,6 +48,7 @@ namespace GamepadMotionHelpers
 		Vec(float inX, float inY, float inZ);
 		void Set(float inX, float inY, float inZ);
 		float Length() const;
+		float LengthSquared() const;
 		void Normalize();
 		Vec Normalized() const;
 		float Dot(const Vec& other) const;
@@ -134,16 +135,51 @@ namespace GamepadMotionHelpers
 		Vec Accel;
 		Vec Grav;
 
-		const int NumGravDirectionSamples = 10;
-		Vec GravDirectionSamples[10];
-		int LastGravityIdx = 9;
-		int NumGravDirectionSamplesCounted = 0;
-		float TimeCorrecting = 0.0f;
+		Vec ShortSmoothAccel;
+		Vec LongSmoothAccel;
+		const float ShortSteadinessHalfTime = 0.25f;
+		const float LongSteadinessHalfTime = 1.f;
+
+		float TimeCorrecting = 0.f;
 
 		Motion();
 		void Reset();
 		void Update(float inGyroX, float inGyroY, float inGyroZ, float inAccelX, float inAccelY, float inAccelZ, float gravityLength, float deltaTime);
 	};
+
+	enum CalibrationMode
+	{
+		Manual = 0,
+		Stillness = 1,
+		SensorFusion = 2,
+	};
+	
+	// https://stackoverflow.com/a/1448478/1130520
+	inline CalibrationMode operator|(CalibrationMode a, CalibrationMode b)
+	{
+	    return static_cast<CalibrationMode>(static_cast<int>(a) | static_cast<int>(b));
+	}
+	
+	inline CalibrationMode operator&(CalibrationMode a, CalibrationMode b)
+	{
+	    return static_cast<CalibrationMode>(static_cast<int>(a) & static_cast<int>(b));
+	}
+	
+	inline CalibrationMode operator~(CalibrationMode a)
+	{
+		return static_cast<CalibrationMode>(~static_cast<int>(a));
+	}
+	
+	// https://stackoverflow.com/a/23152590/1130520
+	inline CalibrationMode& operator|=(CalibrationMode& a, CalibrationMode b)
+	{
+		return (CalibrationMode&)((int&)(a) |= static_cast<int>(b));
+	}
+	
+	inline CalibrationMode& operator&=(CalibrationMode& a, CalibrationMode b)
+	{
+		return (CalibrationMode&)((int&)(a) &= static_cast<int>(b));
+	}
 }
 
 // Note that I'm using a Y-up coordinate system. This is to follow the convention set by the motion sensors in
@@ -152,40 +188,6 @@ namespace GamepadMotionHelpers
 
 // Gyro units should be degrees per second. Accelerometer should be g-force (approx. 9.8 m/s^2 = 1 g). If you're using
 // radians per second, meters per second squared, etc, conversion should be simple.
-
-enum CalibrationMode
-{
-	Manual = 0,
-	Stillness = 1,
-	SensorFusion = 2,
-};
-
-// https://stackoverflow.com/a/1448478/1130520
-inline CalibrationMode operator|(CalibrationMode a, CalibrationMode b)
-{
-    return static_cast<CalibrationMode>(static_cast<int>(a) | static_cast<int>(b));
-}
-
-inline CalibrationMode operator&(CalibrationMode a, CalibrationMode b)
-{
-    return static_cast<CalibrationMode>(static_cast<int>(a) & static_cast<int>(b));
-}
-
-inline CalibrationMode operator~(CalibrationMode a)
-{
-	return static_cast<CalibrationMode>(~static_cast<int>(a));
-}
-
-// https://stackoverflow.com/a/23152590/1130520
-inline CalibrationMode& operator|=(CalibrationMode& a, CalibrationMode b)
-{
-	return (CalibrationMode&)((int&)(a) |= static_cast<int>(b));
-}
-
-inline CalibrationMode& operator&=(CalibrationMode& a, CalibrationMode b)
-{
-	return (CalibrationMode&)((int&)(a) &= static_cast<int>(b));
-}
 
 class GamepadMotion
 {
@@ -210,8 +212,8 @@ public:
 	void GetCalibrationOffset(float& xOffset, float& yOffset, float& zOffset);
 	void SetCalibrationOffset(float xOffset, float yOffset, float zOffset, int weight);
 
-	CalibrationMode GetCalibrationMode();
-	void SetCalibrationMode(CalibrationMode calibrationMode);
+	GamepadMotionHelpers::CalibrationMode GetCalibrationMode();
+	void SetCalibrationMode(GamepadMotionHelpers::CalibrationMode calibrationMode);
 
 	void ResetMotion();
 
@@ -221,7 +223,7 @@ private:
 	GamepadMotionHelpers::Motion Motion;
 	GamepadMotionHelpers::GyroCalibration GyroCalibration;
 	GamepadMotionHelpers::AutoCalibration AutoCalibration;
-	CalibrationMode CurrentCalibrationMode;
+	GamepadMotionHelpers::CalibrationMode CurrentCalibrationMode;
 
 	bool IsCalibrating;
 	void PushSensorSamples(float gyroX, float gyroY, float gyroZ, float accelMagnitude);
@@ -352,6 +354,11 @@ namespace GamepadMotionHelpers
 	float Vec::Length() const
 	{
 		return sqrtf(x * x + y * y + z * z);
+	}
+
+	float Vec::LengthSquared() const
+	{
+		return x * x + y * y + z * z;
 	}
 
 	void Vec::Normalize()
@@ -495,10 +502,11 @@ namespace GamepadMotionHelpers
 
 	void Motion::Reset()
 	{
-		Quaternion.Set(1.0f, 0.0f, 0.0f, 0.0f);
-		Accel.Set(0.0f, 0.0f, 0.0f);
-		Grav.Set(0.0f, 0.0f, 0.0f);
-		NumGravDirectionSamplesCounted = 0;
+		Quaternion.Set(1.f, 0.f, 0.f, 0.f);
+		Accel.Set(0.f, 0.f, 0.f);
+		Grav.Set(0.f, 0.f, 0.f);
+		ShortSmoothAccel.Set(0.f, 0.f, 0.f);
+		LongSmoothAccel.Set(0.f, 0.f, 0.f);
 	}
 
 	/// <summary>
@@ -520,30 +528,25 @@ namespace GamepadMotionHelpers
 		if (accelMagnitude > 0.0f)
 		{
 			const Vec accelNorm = accel / accelMagnitude;
-			LastGravityIdx = (LastGravityIdx + NumGravDirectionSamples - 1) % NumGravDirectionSamples;
-			// for comparing and perhaps smoothing gravity samples, we need them to be global
+			// for comparing and smoothing gravity samples, we need them to be global
 			Vec absoluteAccel = accel * Quaternion;
 			//printf("Absolute Accel: %.4f %.4f %.4f\n",
 			//	absoluteAccel.x, absoluteAccel.y, absoluteAccel.z);
-			GravDirectionSamples[LastGravityIdx] = absoluteAccel;
-			Vec gravityMin = absoluteAccel;
-			Vec gravityMax = absoluteAccel;
-			const float steadyGravityThreshold = 0.05f;
-			NumGravDirectionSamplesCounted++;
-			const int numGravSamples = NumGravDirectionSamplesCounted < NumGravDirectionSamples ? NumGravDirectionSamplesCounted : NumGravDirectionSamples;
-			for (int idx = 1; idx < numGravSamples; idx++)
-			{
-				Vec thisSample = GravDirectionSamples[(LastGravityIdx + idx) % NumGravDirectionSamples];
-				gravityMin = gravityMin.Min(thisSample);
-				gravityMax = gravityMax.Max(thisSample);
-			}
-			const Vec gravityBoxSize = gravityMax - gravityMin;
+			const float shortSmoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
+			ShortSmoothAccel = absoluteAccel.Lerp(ShortSmoothAccel, shortSmoothFactor);
+			const float longSmoothFactor = LongSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / LongSteadinessHalfTime);
+			LongSmoothAccel = absoluteAccel.Lerp(LongSmoothAccel, longSmoothFactor);
+			const float steadyGravityThreshold = 0.03f;
 			//printf(" Gravity Box Size: %.4f _ ", gravityBoxSize.Length());
-			if (gravityBoxSize.x <= steadyGravityThreshold &&
-				gravityBoxSize.y <= steadyGravityThreshold &&
-				gravityBoxSize.z <= steadyGravityThreshold)
+			if ((LongSmoothAccel - ShortSmoothAccel).LengthSquared() <= steadyGravityThreshold*steadyGravityThreshold)
 			{
-				absoluteAccel = gravityMin + (gravityBoxSize * 0.5f);
+				/*if (TimeCorrecting == 0.f)
+				{
+					printf("Gravity Steady\n");
+				}/**/
+				TimeCorrecting += deltaTime;
+
+				absoluteAccel = ShortSmoothAccel;
 				const Vec gravityDirection = -absoluteAccel.Normalized();
 				const Vec expectedGravity = Vec(0.0f, -1.0f, 0.0f) * Quaternion.Inverse();
 				const float errorAngle = acosf(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection)) * 180.0f / (float)M_PI;
@@ -553,9 +556,6 @@ namespace GamepadMotionHelpers
 				if (errorAngle > 0.0f)
 				{
 					const float EaseInTime = 0.25f;
-					TimeCorrecting += deltaTime;
-
-					const float tighteningThreshold = 5.0f;
 
 					float confidentSmoothCorrect = errorAngle;
 					confidentSmoothCorrect *= 1.0f - exp2f(-deltaTime * 4.0f);
@@ -567,16 +567,17 @@ namespace GamepadMotionHelpers
 
 					Quaternion = AngleAxis(confidentSmoothCorrect * (float)M_PI / 180.0f, flattened.x, flattened.y, flattened.z) * Quaternion;
 				}
-				else
-				{
-					TimeCorrecting = 0.0f;
-				}
 
 				Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
 				Accel = accel + Grav; // gravity won't be shaky. accel might. so let's keep using the quaternion's calculated gravity vector.
 			}
 			else
 			{
+				/*if (TimeCorrecting > 0.f)
+				{
+					printf("Gravity Shaken\n");
+				}/**/
+
 				TimeCorrecting = 0.0f;
 				Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
 				Accel = accel + Grav;
@@ -690,7 +691,7 @@ namespace GamepadMotionHelpers
 				const Vec calibratedGyro = MinMaxWindow.GetMidGyro();
 
 				const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
-				const float stillnessLerpFactor = StillnessCalibrationHalfTime <= 0.f ? 1.f : exp2f(-calibrationEaseIn * deltaTime / StillnessCalibrationHalfTime);
+				const float stillnessLerpFactor = StillnessCalibrationHalfTime <= 0.f ? 0.f : exp2f(-calibrationEaseIn * deltaTime / StillnessCalibrationHalfTime);
 				const Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, stillnessLerpFactor);
 
 				CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
@@ -814,7 +815,7 @@ namespace GamepadMotionHelpers
 			const float calibrationEaseIn = SensorFusionCalibrationEaseInTime <= 0.f ? 1.f : TimeSteadySensorFusion / SensorFusionCalibrationEaseInTime;
 			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
 			// recalibrate over time proportional to the difference between the calculated bias and the current assumed bias
-			const float sensorFusionLerpFactor = SensorFusionCalibrationHalfTime <= 0.f ? 1.f : exp2f(-calibrationEaseIn * deltaTime / SensorFusionCalibrationHalfTime);
+			const float sensorFusionLerpFactor = SensorFusionCalibrationHalfTime <= 0.f ? 0.f : exp2f(-calibrationEaseIn * deltaTime / SensorFusionCalibrationHalfTime);
 			Vec newGyroBias = (SmoothedAngularVelocityGyro - SmoothedAngularVelocityAccel).Lerp(oldGyroBias, sensorFusionLerpFactor);
 			// don't change bias in axes that can't be affected by the gravity direction
 			Vec axisCalibrationStrength = thisNormal.Abs();
@@ -889,7 +890,7 @@ namespace GamepadMotionHelpers
 GamepadMotion::GamepadMotion()
 {
 	IsCalibrating = false;
-	CurrentCalibrationMode = CalibrationMode::Manual;
+	CurrentCalibrationMode = GamepadMotionHelpers::CalibrationMode::Manual;
 	Reset();
 	AutoCalibration.SetCalibrationData(&GyroCalibration);
 }
@@ -919,7 +920,7 @@ void GamepadMotion::ProcessMotion(float gyroX, float gyroY, float gyroZ,
 		// we only calibrate in axes that haven't already been calibrated by a previous step. To start, we're calibrating in All axes.
 		GamepadMotionHelpers::Vec vecMask = GamepadMotionHelpers::Vec(1.f);
 		
-		if (CurrentCalibrationMode & CalibrationMode::SensorFusion)
+		if (CurrentCalibrationMode & GamepadMotionHelpers::CalibrationMode::SensorFusion)
 		{
 			AutoCalibration.AddSampleSensorFusion(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), vecMask, deltaTime);
 		}
@@ -928,7 +929,7 @@ void GamepadMotion::ProcessMotion(float gyroX, float gyroY, float gyroZ,
 			AutoCalibration.NoSampleSensorFusion();
 		}
 
-		if (CurrentCalibrationMode & CalibrationMode::Stillness)
+		if (CurrentCalibrationMode & GamepadMotionHelpers::CalibrationMode::Stillness)
 		{
 			AutoCalibration.AddSampleStillness(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), vecMask, deltaTime);
 		}
@@ -1024,12 +1025,12 @@ void GamepadMotion::SetCalibrationOffset(float xOffset, float yOffset, float zOf
 	GyroCalibration.Z = zOffset * weight;
 }
 
-CalibrationMode GamepadMotion::GetCalibrationMode()
+GamepadMotionHelpers::CalibrationMode GamepadMotion::GetCalibrationMode()
 {
 	return CurrentCalibrationMode;
 }
 
-void GamepadMotion::SetCalibrationMode(CalibrationMode calibrationMode)
+void GamepadMotion::SetCalibrationMode(GamepadMotionHelpers::CalibrationMode calibrationMode)
 {
 	CurrentCalibrationMode = calibrationMode;
 }
