@@ -39,21 +39,25 @@ So GamepadMotionHelpers provides some auto-calibration options. You can call ```
 - ```CalibrationMode::Stillness``` - Automatically try to detect when the controller is being held still and update the calibration offset accordingly.
 - ```CalibrationMode::SensorFusion``` - Calculate an angular velocity from changes in the gravity direction as detected by the accelerometer. If these are steady enough, use them to make corrections to the calibration offset. This will only apply to relevant axes.
 
-The last two can be combined by passing ```CalibrationMode::Stillness | CalibrationMode::SensorFusion``` to **SetCalibrationMode**. In this case, **SensorFusion** will be applied first, and only the axis or axes unaffected by it will be affected by the **Stillness** calculation.
-
-Many players are already aware of the shortcomings of trying to automatically detect stillness to automatically calibrate the gyro. Whether on Switch, PlayStation, or using PlayStation controllers on PC, players have tried to track a slow or distant target only to have the aimer suddenly stop moving! The game or the platform has misinterpreted their slow and steady input as the controller being held still, and they've incorrectly recalibrated accordingly. Players *hate it* when this happens.
+Many players are already aware of the shortcomings of trying to automatically detect stillness to automatically calibrate the gyro. Whether on Switch, PlayStation, or using PlayStation controllers on PC, players have tried to track a slow or distant target only to have the aimer suddenly stop moving! The game or the platform has **misinterpreted their slow and steady input as the controller being held still**, and they've incorrectly recalibrated accordingly. Players *hate it* when this happens.
 
 **This is why it's important to let players manually calibrate their gyro** if they want to.
 
-Auto-calibration is used so widely in console games, that it's speculated that game developers may not have the option to disable it on these platforms. If this is the case, GamepadMotionHelpers offers a big advantage over those platforms: you can disable it and enable it at any time.
+Auto-calibration is used so widely in console games that it's speculated that game developers may not have the option to disable it on these platforms. If this is the case, GamepadMotionHelpers offers a big advantage over those platforms: you can disable it and enable it at any time.
 
 You, the game developer, can have your game tell if the player is tracking a distant or slow-moving target. You can tell if the player's aimer is moving towards a visible target or roughly following the movement of one. When it is, maybe disabling the auto-calibration (```SetCalibrationMode(CalibrationMode::Manual)```) could be the difference between good and bad auto-calibration. I don't know if the GamepadMotionHelpers auto-calibration functions are better or worse than their Switch and PlayStation counterparts generally, but by letting you take the game's context into account, you may be able to offer players a way better experience without them having to manually calibrate.
 
-But still give them the option to, please :)
+But still give them the option to calibrate manually, please :)
 
-The **SensorFusion** calibration mode has shortcomings of its own. It's much harder to accidentally trick the game into incorrectly calibrating, but the angular velocity calculated from the accelerometer is generally much less precise. Leaving the controller still, you'll notice the calibrated gyro moving slightly up and down over time. So while the **Stillness** mode is characterised by good behaviour occasionally punctuated by frustrating errors, the **SensorFusion** mode will tend to be more consistently not-quite-right without being terrible.
+The **SensorFusion** calibration mode has shortcomings of its own. It's much harder to accidentally trick the game into incorrectly calibrating, but the angular velocity calculated from the accelerometer moment-to-moment is generally much less precise. Leaving the controller still, you'll notice the calibrated gyro moving slightly up and down over time. So while the **Stillness** mode is characterised by good behaviour occasionally punctuated by frustrating errors, the **SensorFusion** mode will tend to be more consistently not-quite-right without being terrible.
 
-Secondly, this library currently only combines accelerometer and gyro, so the **SensorFusion** auto-calibration cannot correct the gyro in all axes at the same time.
+Secondly, this library currently only combines accelerometer and gyro, so the **SensorFusion** auto-calibration cannot correct the gyro in all axes at the same time. The **SensorFusion**-only mode will be more useful in future when magnetometer input is supported, which can account for the axes that the accelerometer can't.
+
+Both auto-calibration modes can be combined by passing ```CalibrationMode::Stillness | CalibrationMode::SensorFusion``` to **SetCalibrationMode**. In this case, it'll use **Stillness** auto-calibration, but it'll adjust the calibration offset based on any angular velocity implied by changes in the accelerometer input. This tends to give better results than just using **Stillness** or **SensorFusion** on their own.
+
+If you aren't sure what to choose, I'd suggest using the combined ```CalibrationMode::Stillness | CalibrationMode::SensorFusion``` when auto calibration is enabled, but also allowing the player to manually calibrate.
+
+**TODO** This is a clunky way to let the user set up what is obviously the best solution. Maybe I should just call it "hybrid" or something and be done with it?
 
 ## In the Wild
 GamepadMotionHelpers is currently used in:
