@@ -1,6 +1,6 @@
 // Copyright (c) 2020-2021 Julian "Jibb" Smart
 // Released under the MIT license. See https://github.com/JibbSmart/GamepadMotionHelpers/blob/main/LICENSE for more info
-// Revision 4
+// Revision 5
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -81,6 +81,7 @@ namespace GamepadMotionHelpers
 		Vec MinAccel;
 		Vec MaxAccel;
 		Vec MeanAccel;
+		Vec StartAccel;
 		int NumSamples;
 		float TimeSampled;
 
@@ -99,9 +100,9 @@ namespace GamepadMotionHelpers
 		Vec PreviousAccel;
 
 		AutoCalibration();
-		bool AddSampleStillness(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime);
+		bool AddSampleStillness(const Vec& inGyro, const Vec& inAccel, float deltaTime, bool doSensorFusion);
 		void NoSampleStillness();
-		bool AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime);
+		bool AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, float deltaTime);
 		void NoSampleSensorFusion();
 		void SetCalibrationData(GyroCalibration* calibrationData);
 		void SetSettings(GamepadMotionSettings* settings);
@@ -643,6 +644,7 @@ namespace GamepadMotionHelpers
 			MaxAccel = inAccel;
 			MinAccel = inAccel;
 			MeanAccel = inAccel;
+			StartAccel = inAccel;
 			NumSamples = 1;
 			TimeSampled += deltaTime;
 			return;
@@ -675,7 +677,7 @@ namespace GamepadMotionHelpers
 		TimeSteadyStillness = 0.f;
 	}
 
-	bool AutoCalibration::AddSampleStillness(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
+	bool AutoCalibration::AddSampleStillness(const Vec& inGyro, const Vec& inAccel, float deltaTime, bool doSensorFusion)
 	{
 		if (inGyro.x == 0.f && inGyro.y == 0.f && inGyro.z == 0.f &&
 			inAccel.x == 0.f && inAccel.y == 0.f && inAccel.z == 0.f)
@@ -744,11 +746,41 @@ namespace GamepadMotionHelpers
 
 				const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
 				const float stillnessLerpFactor = stillnessCalibrationHalfTime <= 0.f ? 0.f : exp2f(-calibrationEaseIn * deltaTime / stillnessCalibrationHalfTime);
-				const Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, stillnessLerpFactor);
+				Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, stillnessLerpFactor);
 
-				CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
-				CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
-				CalibrationData->Z = (inOutVecMask.z != 0) ? newGyroBias.z : oldGyroBias.z;
+				if (doSensorFusion)
+				{
+					const Vec previousNormal = MinMaxWindow.StartAccel.Normalized();
+					const Vec thisNormal = inAccel.Normalized();
+					Vec angularVelocity = thisNormal.Cross(previousNormal);
+					const float crossLength = angularVelocity.Length();
+					if (crossLength > 0.f)
+					{
+						const float thisDotPrev = min(max(-1.f, thisNormal.Dot(previousNormal)), 1.f);
+						const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
+						const float anglePerSecond = angleChange / MinMaxWindow.TimeSampled;
+						angularVelocity *= anglePerSecond / crossLength;
+					}
+
+					Vec axisCalibrationStrength = thisNormal.Abs();
+					Vec sensorFusionBias = (calibratedGyro - angularVelocity).Lerp(oldGyroBias, stillnessLerpFactor);
+					if (axisCalibrationStrength.x <= 0.7f)
+					{
+						newGyroBias.x = sensorFusionBias.x;
+					}
+					if (axisCalibrationStrength.y <= 0.7f)
+					{
+						newGyroBias.y = sensorFusionBias.y;
+					}
+					if (axisCalibrationStrength.z <= 0.7f)
+					{
+						newGyroBias.z = sensorFusionBias.z;
+					}
+				}
+
+				CalibrationData->X = newGyroBias.x;
+				CalibrationData->Y = newGyroBias.y;
+				CalibrationData->Z = newGyroBias.z;
 
 				CalibrationData->AccelMagnitude = MinMaxWindow.MeanAccel.Length();
 				CalibrationData->NumSamples = 1;
@@ -783,7 +815,7 @@ namespace GamepadMotionHelpers
 		MinMaxWindow.Reset(0.f);
 	}
 
-	bool AutoCalibration::AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, Vec& inOutVecMask, float deltaTime)
+	bool AutoCalibration::AddSampleSensorFusion(const Vec& inGyro, const Vec& inAccel, float deltaTime)
 	{
 		if (deltaTime <= 0.f)
 		{
@@ -848,11 +880,11 @@ namespace GamepadMotionHelpers
 		const Vec thisNormal = thisAccel.Normalized();
 		Vec angularVelocity = thisNormal.Cross(previousNormal);
 		const float crossLength = angularVelocity.Length();
-		const float thisDotPrev = min(max(-1.f, thisNormal.Dot(previousNormal)), 1.f);
-		const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
-		const float anglePerSecond = angleChange / deltaTime;
 		if (crossLength > 0.f)
 		{
+			const float thisDotPrev = min(max(-1.f, thisNormal.Dot(previousNormal)), 1.f);
+			const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
+			const float anglePerSecond = angleChange / deltaTime;
 			angularVelocity *= anglePerSecond / crossLength;
 		}
 		SmoothedAngularVelocityAccel = angularVelocity;
@@ -896,23 +928,9 @@ namespace GamepadMotionHelpers
 			}
 			newGyroBias = newGyroBias.Lerp(oldGyroBias, axisCalibrationStrength.Min(Vec(1.f)));
 
-			CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
-			CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
-			CalibrationData->Z = (inOutVecMask.z != 0) ? newGyroBias.z : oldGyroBias.z;
-
-			// prevent later stages of auto calibration from calibrating in the axes we successfully calibrated here
-			if (axisCalibrationStrength.x <= 0.7f)
-			{
-				inOutVecMask.x = 0;
-			}
-			if (axisCalibrationStrength.y <= 0.7f)
-			{
-				inOutVecMask.y = 0;
-			}
-			if (axisCalibrationStrength.z <= 0.7f)
-			{
-				inOutVecMask.z = 0;
-			}
+			CalibrationData->X = newGyroBias.x;
+			CalibrationData->Y = newGyroBias.y;
+			CalibrationData->Z = newGyroBias.z;
 
 			CalibrationData->AccelMagnitude = thisAccel.Length();
 
@@ -986,27 +1004,21 @@ void GamepadMotion::ProcessMotion(float gyroX, float gyroY, float gyroZ,
 		AutoCalibration.NoSampleSensorFusion();
 		AutoCalibration.NoSampleStillness();
 	}
+	else if (CurrentCalibrationMode & GamepadMotionHelpers::CalibrationMode::Stillness)
+	{
+		AutoCalibration.AddSampleStillness(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), deltaTime, CurrentCalibrationMode & GamepadMotionHelpers::CalibrationMode::SensorFusion);
+		AutoCalibration.NoSampleSensorFusion();
+	}
 	else
 	{
-		// we only calibrate in axes that haven't already been calibrated by a previous step. To start, we're calibrating in All axes.
-		GamepadMotionHelpers::Vec vecMask = GamepadMotionHelpers::Vec(1.f);
-		
+		AutoCalibration.NoSampleStillness();
 		if (CurrentCalibrationMode & GamepadMotionHelpers::CalibrationMode::SensorFusion)
 		{
-			AutoCalibration.AddSampleSensorFusion(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), vecMask, deltaTime);
+			AutoCalibration.AddSampleSensorFusion(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), deltaTime);
 		}
 		else
 		{
 			AutoCalibration.NoSampleSensorFusion();
-		}
-
-		if (CurrentCalibrationMode & GamepadMotionHelpers::CalibrationMode::Stillness)
-		{
-			AutoCalibration.AddSampleStillness(GamepadMotionHelpers::Vec(gyroX, gyroY, gyroZ), GamepadMotionHelpers::Vec(accelX, accelY, accelZ), vecMask, deltaTime);
-		}
-		else
-		{
-			AutoCalibration.NoSampleStillness();
 		}
 	}
 
