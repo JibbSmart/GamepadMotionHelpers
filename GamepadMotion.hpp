@@ -186,7 +186,8 @@ class GamepadMotionSettings
 {
 public:
 	int MinStillnessSamples = 10;
-	float MinStillnessTime = 2.f;
+	float MinStillnessCollectionTime = 0.5f;
+	float MinStillnessCorrectionTime = 2.f;
 	float MaxStillnessError = 1.25f;
 	float StillnessSampleDeteriorationRate = 0.2f;
 	float StillnessErrorClimbRate = 0.1f;
@@ -690,7 +691,8 @@ namespace GamepadMotionHelpers
 
 		// get settings
 		const int minStillnessSamples = Settings->MinStillnessSamples;
-		const float minStillnessTime = Settings->MinStillnessTime;
+		const float minStillnessCollectionTime = Settings->MinStillnessCollectionTime;
+		const float minStillnessCorrectionTime = Settings->MinStillnessCorrectionTime;
 		const float maxStillnessError = Settings->MaxStillnessError;
 		const float stillnessSampleDeteriorationRate = Settings->StillnessSampleDeteriorationRate;
 		const float stillnessErrorClimbRate = Settings->StillnessErrorClimbRate;
@@ -709,10 +711,15 @@ namespace GamepadMotionHelpers
 		const Vec gyroDelta = MinMaxWindow.MaxGyro - MinMaxWindow.MinGyro;
 		const Vec accelDelta = MinMaxWindow.MaxAccel - MinMaxWindow.MinAccel;
 
-		if (MinMaxWindow.NumSamples >= minStillnessSamples && MinMaxWindow.TimeSampled >= minStillnessTime)
+		if (MinMaxWindow.NumSamples >= minStillnessSamples && MinMaxWindow.TimeSampled >= minStillnessCollectionTime)
 		{
 			MinDeltaGyro = MinDeltaGyro.Min(gyroDelta);
 			MinDeltaAccel = MinDeltaAccel.Min(accelDelta);
+		}
+		else
+		{
+			RecalibrateThreshold = min(RecalibrateThreshold + stillnessErrorClimbRate * deltaTime, maxStillnessError);
+			return false;
 		}
 
 		// check that all inputs are below appropriate thresholds to be considered "still"
@@ -723,7 +730,7 @@ namespace GamepadMotionHelpers
 			accelDelta.y <= MinDeltaAccel.y * RecalibrateThreshold &&
 			accelDelta.z <= MinDeltaAccel.z * RecalibrateThreshold)
 		{
-			if (CalibrationData != nullptr && MinMaxWindow.NumSamples >= minStillnessSamples && MinMaxWindow.TimeSampled >= minStillnessTime)
+			if (CalibrationData != nullptr && MinMaxWindow.NumSamples >= minStillnessSamples && MinMaxWindow.TimeSampled >= minStillnessCorrectionTime)
 			{
 				/*if (TimeSteadyStillness == 0.f)
 				{
