@@ -731,7 +731,7 @@ namespace GamepadMotionHelpers
 					printf("Still!\n");
 				}/**/
 
-				TimeSteadyStillness = min(TimeSteadyStillness + deltaTime, stillnessCalibrationEaseInTime);
+				TimeSteadyStillness = std::min(TimeSteadyStillness + deltaTime, stillnessCalibrationEaseInTime);
 				const float calibrationEaseIn = stillnessCalibrationEaseInTime <= 0.f ? 1.f : TimeSteadyStillness / stillnessCalibrationEaseInTime;
 
 				const Vec calibratedGyro = MinMaxWindow.GetMidGyro();
@@ -842,7 +842,7 @@ namespace GamepadMotionHelpers
 		const Vec thisNormal = thisAccel.Normalized();
 		Vec angularVelocity = thisNormal.Cross(previousNormal);
 		const float crossLength = angularVelocity.Length();
-		const float thisDotPrev = std::clamp(thisNormal.Dot(previousNormal)), -1.f, 1.f);
+		const float thisDotPrev = std::clamp(thisNormal.Dot(previousNormal), -1.f, 1.f);
 		const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
 		const float anglePerSecond = angleChange / deltaTime;
 		if (crossLength > 0.f)
@@ -888,7 +888,7 @@ namespace GamepadMotionHelpers
 			{
 				axisCalibrationStrength.z = 1.f;
 			}
-			newGyroBias = newGyroBias.Lerp(oldGyroBias, axisCalibrationStrength.min(Vec(1.f)));
+			newGyroBias = newGyroBias.Lerp(oldGyroBias, axisCalibrationStrength.Min(Vec(1.f)));
 
 			CalibrationData->X = (inOutVecMask.x != 0) ? newGyroBias.x : oldGyroBias.x;
 			CalibrationData->Y = (inOutVecMask.y != 0) ? newGyroBias.y : oldGyroBias.y;
