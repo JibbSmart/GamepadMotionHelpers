@@ -4,6 +4,7 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <algorithm> // std::min, std::max and std::clamp
 
 // You don't need to look at these. These will just be used internally by the GamepadMotion class declared below.
 // You can ignore anything in namespace GamepadMotionHelpers.
@@ -730,12 +731,12 @@ namespace GamepadMotionHelpers
 					printf("Still!\n");
 				}/**/
 
-				TimeSteadyStillness = min(TimeSteadyStillness + deltaTime, stillnessCalibrationEaseInTime);
+				TimeSteadyStillness = std::min(TimeSteadyStillness + deltaTime, stillnessCalibrationEaseInTime);
 				const float calibrationEaseIn = stillnessCalibrationEaseInTime <= 0.f ? 1.f : TimeSteadyStillness / stillnessCalibrationEaseInTime;
 
 				const Vec calibratedGyro = MinMaxWindow.GetMidGyro();
 
-				const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
+				const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / std::max((float)CalibrationData->NumSamples, 1.f);
 				const float stillnessLerpFactor = stillnessCalibrationHalfTime <= 0.f ? 0.f : exp2f(-calibrationEaseIn * deltaTime / stillnessCalibrationHalfTime);
 				const Vec newGyroBias = calibratedGyro.Lerp(oldGyroBias, stillnessLerpFactor);
 
@@ -750,7 +751,7 @@ namespace GamepadMotionHelpers
 			}
 			else
 			{
-				RecalibrateThreshold = min(RecalibrateThreshold + StillnessErrorClimbRate * deltaTime, MaxStillnessError);
+				RecalibrateThreshold = std::min(RecalibrateThreshold + StillnessErrorClimbRate * deltaTime, MaxStillnessError);
 			}
 		}
 		else if (TimeSteadyStillness > 0.f)
@@ -764,7 +765,7 @@ namespace GamepadMotionHelpers
 		}
 		else
 		{
-			RecalibrateThreshold = min(RecalibrateThreshold + StillnessErrorClimbRate * deltaTime, MaxStillnessError);
+			RecalibrateThreshold = std::min(RecalibrateThreshold + StillnessErrorClimbRate * deltaTime, MaxStillnessError);
 			MinMaxWindow.Reset(0.f);
 		}
 
@@ -841,7 +842,7 @@ namespace GamepadMotionHelpers
 		const Vec thisNormal = thisAccel.Normalized();
 		Vec angularVelocity = thisNormal.Cross(previousNormal);
 		const float crossLength = angularVelocity.Length();
-		const float thisDotPrev = min(max(-1.f, thisNormal.Dot(previousNormal)), 1.f);
+		const float thisDotPrev = std::clamp(thisNormal.Dot(previousNormal), -1.f, 1.f);
 		const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
 		const float anglePerSecond = angleChange / deltaTime;
 		if (crossLength > 0.f)
@@ -867,9 +868,9 @@ namespace GamepadMotionHelpers
 				printf("Steady!\n");
 			}/**/
 
-			TimeSteadySensorFusion = min(TimeSteadySensorFusion + deltaTime, sensorFusionCalibrationEaseInTime);
+			TimeSteadySensorFusion = std::min(TimeSteadySensorFusion + deltaTime, sensorFusionCalibrationEaseInTime);
 			const float calibrationEaseIn = sensorFusionCalibrationEaseInTime <= 0.f ? 1.f : TimeSteadySensorFusion / sensorFusionCalibrationEaseInTime;
-			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / max((float)CalibrationData->NumSamples, 1.f);
+			const Vec oldGyroBias = Vec(CalibrationData->X, CalibrationData->Y, CalibrationData->Z) / std::max((float)CalibrationData->NumSamples, 1.f);
 			// recalibrate over time proportional to the difference between the calculated bias and the current assumed bias
 			const float sensorFusionLerpFactor = sensorFusionCalibrationHalfTime <= 0.f ? 0.f : exp2f(-calibrationEaseIn * deltaTime / sensorFusionCalibrationHalfTime);
 			Vec newGyroBias = (SmoothedAngularVelocityGyro - SmoothedAngularVelocityAccel).Lerp(oldGyroBias, sensorFusionLerpFactor);
