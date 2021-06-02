@@ -1167,7 +1167,7 @@ void GamepadMotion::GetCalibratedSensor(float& gyroOffsetX, float& gyroOffsetY, 
 		gyroOffsetX = 0.f;
 		gyroOffsetY = 0.f;
 		gyroOffsetZ = 0.f;
-		accelMagnitude = 0.f;
+		accelMagnitude = 1.f;
 		return;
 	}
 
