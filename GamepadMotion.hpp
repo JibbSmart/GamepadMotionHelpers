@@ -1,6 +1,6 @@
 // Copyright (c) 2020-2021 Julian "Jibb" Smart
 // Released under the MIT license. See https://github.com/JibbSmart/GamepadMotionHelpers/blob/main/LICENSE for more info
-// Revision 5
+// Revision 6
 
 #pragma once
 
