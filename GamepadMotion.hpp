@@ -135,6 +135,9 @@ namespace GamepadMotionHelpers
 
 		float TimeCorrecting = 0.f;
 
+		float CorrectionAngleLeftover = 0.f;
+		float RotationAngleLeftover = 0.f;
+
 		Motion();
 		void Reset();
 		void Update(float inGyroX, float inGyroY, float inGyroZ, float inAccelX, float inAccelY, float inAccelZ, float gravityLength, float deltaTime);
@@ -207,7 +210,7 @@ public:
 	float SensorFusionCalibrationEaseInTime = 3.f;
 	float SensorFusionCalibrationHalfTime = 0.1f;
 
-	float SteadyGravityThreshold = 0.03f;
+	float SteadyGravityThreshold = 0.3f;
 	float GravityCorrectEaseInTime = 0.25f;
 	float GravityCorrectHalfTime = 0.25f;
 };
@@ -555,8 +558,11 @@ namespace GamepadMotionHelpers
 		angle *= deltaTime;
 
 		// rotate
-		Quat rotation = AngleAxis(angle, axis.x, axis.y, axis.z);
+		// we're assuming leftovers from the previous frame are still in the same axis. Could not make this assumption and do a little more work?
+		Quat rotation = AngleAxis(angle + RotationAngleLeftover, axis.x, axis.y, axis.z);
 		Quaternion *= rotation; // do it this way because it's a local rotation, not global
+
+		RotationAngleLeftover = std::max(0.f, angle - acosf(rotation.w) * 2.f);
 		//printf("Quat: %.4f %.4f %.4f %.4f _",
 		//	Quaternion.w, Quaternion.x, Quaternion.y, Quaternion.z);
 		float accelMagnitude = accel.Length();
@@ -569,52 +575,86 @@ namespace GamepadMotionHelpers
 			//	absoluteAccel.x, absoluteAccel.y, absoluteAccel.z);
 			const float shortSmoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
 			ShortSmoothAccel = absoluteAccel.Lerp(ShortSmoothAccel, shortSmoothFactor);
-			const float longSmoothFactor = LongSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / LongSteadinessHalfTime);
-			LongSmoothAccel = absoluteAccel.Lerp(LongSmoothAccel, longSmoothFactor);
-			//printf(" Gravity Box Size: %.4f _ ", gravityBoxSize.Length());
-			if ((LongSmoothAccel - ShortSmoothAccel).LengthSquared() <= steadyGravityThreshold*steadyGravityThreshold)
+
+			// simple complementary filter
+			absoluteAccel = ShortSmoothAccel;
+			const Vec gravityDirection = -absoluteAccel.Normalized();
+			const float errorAngle = acosf(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection));
+			
+			const Vec flattened = gravityDirection.Cross(Vec(0.0f, -1.0f, 0.0f)).Normalized();
+			//const float MinimumCorrectionRate = 0.087f;
+			//const float MinimumCorrectionRate = 0.02f;
+			const float MinimumCorrectionRate = 0.f;
+			const float SlowCorrectionFactor = 1.f;
+			const float FastCorrectionFactor = 0.1f;
+			const float FastCorrectionThreshold = 0.1f * deltaTime;
+			const float CorrectionRate = SlowCorrectionFactor + std::clamp(angle / FastCorrectionThreshold, 0.f, 1.f) * (FastCorrectionFactor - SlowCorrectionFactor);
+			const float maxCorrectionThisSample = std::max(angle * CorrectionRate, MinimumCorrectionRate * deltaTime) + CorrectionAngleLeftover; // angle already multiplied by time step
+
+			if (errorAngle > maxCorrectionThisSample)
 			{
-				/*if (TimeCorrecting == 0.f)
-				{
-					printf("Gravity Steady\n");
-				}/**/
-				TimeCorrecting += deltaTime;
+				Quat correctionQuat = AngleAxis(maxCorrectionThisSample, flattened.x, flattened.y, flattened.z);
+				Quaternion = correctionQuat * Quaternion;
 
-				absoluteAccel = ShortSmoothAccel;
-				const Vec gravityDirection = -absoluteAccel.Normalized();
-				const Vec expectedGravity = Vec(0.0f, -1.0f, 0.0f) * Quaternion.Inverse();
-				const float errorAngle = acosf(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection)) * 180.0f / (float)M_PI;
-
-				const Vec flattened = gravityDirection.Cross(Vec(0.0f, -1.0f, 0.0f)).Normalized();
-
-				if (errorAngle > 0.0f)
-				{
-					const float correctFactor = gravityCorrectHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / gravityCorrectHalfTime);
-					float confidentSmoothCorrect = errorAngle;
-					confidentSmoothCorrect *= 1.0f - correctFactor;
-
-					if (TimeCorrecting < gravityCorrectEaseInTime)
-					{
-						confidentSmoothCorrect *= TimeCorrecting / gravityCorrectEaseInTime;
-					}
-
-					Quaternion = AngleAxis(confidentSmoothCorrect * (float)M_PI / 180.0f, flattened.x, flattened.y, flattened.z) * Quaternion;
-				}
-
-				Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
-				Accel = accel + Grav; // gravity won't be shaky. accel might. so let's keep using the quaternion's calculated gravity vector.
+				CorrectionAngleLeftover = std::max(0.f, maxCorrectionThisSample - acosf(correctionQuat.w) * 2.f);
 			}
 			else
 			{
-				/*if (TimeCorrecting > 0.f)
-				{
-					printf("Gravity Shaken\n");
-				}/**/
+				Quat correctionQuat = AngleAxis(errorAngle, flattened.x, flattened.y, flattened.z);
+				Quaternion = correctionQuat * Quaternion;
 
-				TimeCorrecting = 0.0f;
-				Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
-				Accel = accel + Grav;
+				CorrectionAngleLeftover = std::max(0.f, errorAngle - acosf(correctionQuat.w) * 2.f);
 			}
+			
+			Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
+			Accel = accel + Grav; // gravity won't be shaky. accel might. so let's keep using the quaternion's calculated gravity vector.
+
+			//const float longSmoothFactor = LongSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / LongSteadinessHalfTime);
+			//LongSmoothAccel = absoluteAccel.Lerp(LongSmoothAccel, longSmoothFactor);
+			////printf(" Gravity Box Size: %.4f _ ", gravityBoxSize.Length());
+			//if ((LongSmoothAccel - ShortSmoothAccel).LengthSquared() <= steadyGravityThreshold*steadyGravityThreshold)
+			//{
+			//	/*if (TimeCorrecting == 0.f)
+			//	{
+			//		printf("Gravity Steady\n");
+			//	}/**/
+			//	TimeCorrecting += deltaTime;
+			//
+			//	absoluteAccel = ShortSmoothAccel;
+			//	const Vec gravityDirection = -absoluteAccel.Normalized();
+			//	const Vec expectedGravity = Vec(0.0f, -1.0f, 0.0f) * Quaternion.Inverse();
+			//	const float errorAngle = acosf(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection)) * 180.0f / (float)M_PI;
+			//
+			//	const Vec flattened = gravityDirection.Cross(Vec(0.0f, -1.0f, 0.0f)).Normalized();
+			//
+			//	if (errorAngle > 0.0f)
+			//	{
+			//		const float correctFactor = gravityCorrectHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / gravityCorrectHalfTime);
+			//		float confidentSmoothCorrect = errorAngle;
+			//		confidentSmoothCorrect *= 1.0f - correctFactor;
+			//
+			//		if (TimeCorrecting < gravityCorrectEaseInTime)
+			//		{
+			//			confidentSmoothCorrect *= TimeCorrecting / gravityCorrectEaseInTime;
+			//		}
+			//
+			//		Quaternion = AngleAxis(confidentSmoothCorrect * (float)M_PI / 180.0f, flattened.x, flattened.y, flattened.z) * Quaternion;
+			//	}
+			//
+			//	Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
+			//	Accel = accel + Grav; // gravity won't be shaky. accel might. so let's keep using the quaternion's calculated gravity vector.
+			//}
+			//else
+			//{
+			//	/*if (TimeCorrecting > 0.f)
+			//	{
+			//		printf("Gravity Shaken\n");
+			//	}/**/
+			//
+			//	TimeCorrecting = 0.0f;
+			//	Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
+			//	Accel = accel + Grav;
+			//}
 		}
 		else
 		{
