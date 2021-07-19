@@ -645,7 +645,7 @@ namespace GamepadMotionHelpers
 
 			const Vec gravityDirection = Grav.Normalized() * Quaternion.Inverse(); // absolute gravity direction
 			const float errorAngle = acosf(std::clamp(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection), -1.f, 1.f));
-			const Vec flattened = Vec(0.0f, -1.0f, 0.0f).Cross(gravityDirection).Normalized();
+			const Vec flattened = Vec(0.0f, -1.0f, 0.0f).Cross(gravityDirection);
 			Quat correctionQuat = AngleAxis(errorAngle, flattened.x, flattened.y, flattened.z);
 			Quaternion = correctionQuat * Quaternion;
 			
