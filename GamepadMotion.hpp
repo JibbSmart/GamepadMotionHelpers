@@ -128,8 +128,9 @@ namespace GamepadMotionHelpers
 		Vec Accel;
 		Vec Grav;
 
-		Vec ShortSmoothAccel;
-		Vec LongSmoothAccel;
+		Vec ShortSmoothAccel = Vec();
+		Vec ShortShakinessAccel = Vec();
+		Vec LongSmoothAccel = Vec();
 		const float ShortSteadinessHalfTime = 0.25f;
 		const float LongSteadinessHalfTime = 1.f;
 
@@ -213,6 +214,20 @@ public:
 	float SteadyGravityThreshold = 0.3f;
 	float GravityCorrectEaseInTime = 0.25f;
 	float GravityCorrectHalfTime = 0.25f;
+
+	float GravityCorrectionShakinessMaxThreshold = 0.4f;
+	float GravityCorrectionShakinessMinThreshold = 0.01f;
+
+	//float GravityCorrectionStillSpeed = 0.1f;
+	//float GravityCorrectionShakySpeed = 0.001f;
+	float GravityCorrectionStillSpeed = 1.f;
+	float GravityCorrectionShakySpeed = 0.1f;
+
+	float GravityCorrectionGyroFactor = 0.1f;
+	float GravityCorrectionGyroMinThreshold = 0.05f;
+	float GravityCorrectionGyroMaxThreshold = 0.25f;
+
+	float GravityCorrectionMinimumSpeed = 0.01f;
 };
 
 class GamepadMotion
@@ -534,6 +549,7 @@ namespace GamepadMotionHelpers
 		Accel.Set(0.f, 0.f, 0.f);
 		Grav.Set(0.f, 0.f, 0.f);
 		ShortSmoothAccel.Set(0.f, 0.f, 0.f);
+		ShortShakinessAccel.Set(0.f, 0.f, 0.f);
 		LongSmoothAccel.Set(0.f, 0.f, 0.f);
 	}
 
@@ -551,11 +567,19 @@ namespace GamepadMotionHelpers
 		const float steadyGravityThreshold = Settings->SteadyGravityThreshold;
 		const float gravityCorrectEaseInTime = Settings->GravityCorrectEaseInTime;
 		const float gravityCorrectHalfTime = Settings->GravityCorrectHalfTime;
+		const float gravityCorrectionShakinessMinThreshold = Settings->GravityCorrectionShakinessMinThreshold;
+		const float gravityCorrectionShakinessMaxThreshold = Settings->GravityCorrectionShakinessMaxThreshold;
+		const float gravityCorrectionStillSpeed = Settings->GravityCorrectionStillSpeed;
+		const float gravityCorrectionShakySpeed = Settings->GravityCorrectionShakySpeed;
+		const float gravityCorrectionGyroFactor = Settings->GravityCorrectionGyroFactor;
+		const float gravityCorrectionGyroMinThreshold = Settings->GravityCorrectionGyroMinThreshold;
+		const float gravityCorrectionGyroMaxThreshold = Settings->GravityCorrectionGyroMaxThreshold;
+		const float gravityCorrectionMinimumSpeed = Settings->GravityCorrectionMinimumSpeed;
 
 		const Vec axis = Vec(inGyroX, inGyroY, inGyroZ);
 		const Vec accel = Vec(inAccelX, inAccelY, inAccelZ);
-		float angle = axis.Length() * (float)M_PI / 180.0f;
-		angle *= deltaTime;
+		const float angleSpeed = axis.Length() * (float)M_PI / 180.0f;
+		const float angle = angleSpeed * deltaTime;
 
 		// rotate
 		// we're assuming leftovers from the previous frame are still in the same axis. Could not make this assumption and do a little more work?
@@ -569,12 +593,57 @@ namespace GamepadMotionHelpers
 		if (accelMagnitude > 0.0f)
 		{
 			const Vec accelNorm = accel / accelMagnitude;
-			// for comparing and smoothing gravity samples, we need them to be global
+			// world space accel for comparing over time regardless of rotation
 			Vec absoluteAccel = accel * Quaternion;
 			//printf("Absolute Accel: %.4f %.4f %.4f\n",
 			//	absoluteAccel.x, absoluteAccel.y, absoluteAccel.z);
 			const float shortSmoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
+			ShortShakinessAccel = Vec().Lerp(ShortShakinessAccel, shortSmoothFactor);
+			ShortShakinessAccel = ShortShakinessAccel.Max((absoluteAccel - ShortSmoothAccel).Abs());
 			ShortSmoothAccel = absoluteAccel.Lerp(ShortSmoothAccel, shortSmoothFactor);
+
+			const float shakiness = ShortShakinessAccel.Length();
+			//printf("Shakiness: %.4f\n", shakiness);
+
+			// update grav by rotation
+			Grav *= rotation.Inverse();
+			// we want to close the gap between grav and raw acceleration. What's the difference
+			const Vec gravToAccel = (accelNorm * -gravityLength) - Grav;
+			const Vec gravToAccelDir = gravToAccel.Normalized();
+			// adjustment rate
+			float gravCorrectionSpeed;
+			if (gravityCorrectionShakinessMinThreshold < gravityCorrectionShakinessMaxThreshold)
+			{
+				gravCorrectionSpeed = gravityCorrectionStillSpeed + (gravityCorrectionShakySpeed - gravityCorrectionStillSpeed) * std::clamp((shakiness - gravityCorrectionShakinessMinThreshold) / (gravityCorrectionShakinessMaxThreshold - gravityCorrectionShakinessMinThreshold), 0.f, 1.f);
+			}
+			else
+			{
+				gravCorrectionSpeed = shakiness < gravityCorrectionShakinessMaxThreshold ? gravityCorrectionStillSpeed : gravityCorrectionShakySpeed;
+			}
+			// we also limit it to be no faster than a given proportion of the gyro rate, or the minimum gravity correction speed
+			const float gyroGravCorrectionLimit = std::max(angleSpeed * gravityCorrectionGyroFactor, gravityCorrectionMinimumSpeed);
+			if (gravCorrectionSpeed > gyroGravCorrectionLimit)
+			{
+				float closeEnoughFactor;
+				if (gravityCorrectionGyroMinThreshold < gravityCorrectionGyroMaxThreshold)
+				{
+					closeEnoughFactor = std::clamp((gravToAccel.Length() - gravityCorrectionGyroMinThreshold) / (gravityCorrectionGyroMaxThreshold - gravityCorrectionGyroMinThreshold), 0.f, 1.f);
+				}
+				else
+				{
+					closeEnoughFactor = gravToAccel.Length() < gravityCorrectionGyroMaxThreshold ? 0.f : 1.f;
+				}
+				gravCorrectionSpeed = gyroGravCorrectionLimit + (gravCorrectionSpeed - gyroGravCorrectionLimit) * closeEnoughFactor;
+			}
+			const Vec gravToAccelDelta = gravToAccelDir * gravCorrectionSpeed * deltaTime;
+			if (gravToAccelDelta.LengthSquared() < gravToAccel.LengthSquared())
+			{
+				Grav += gravToAccelDelta;
+			}
+			else
+			{
+				Grav = accelNorm * -gravityLength;
+			}
 
 			// simple complementary filter
 			absoluteAccel = ShortSmoothAccel;
@@ -606,8 +675,8 @@ namespace GamepadMotionHelpers
 				CorrectionAngleLeftover = std::max(0.f, errorAngle - acosf(correctionQuat.w) * 2.f);
 			}
 			
-			Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
-			Accel = accel + Grav; // gravity won't be shaky. accel might. so let's keep using the quaternion's calculated gravity vector.
+			//Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
+			Accel = accel + Grav;
 
 			//const float longSmoothFactor = LongSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / LongSteadinessHalfTime);
 			//LongSmoothAccel = absoluteAccel.Lerp(LongSmoothAccel, longSmoothFactor);
