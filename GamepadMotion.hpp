@@ -128,9 +128,8 @@ namespace GamepadMotionHelpers
 		Vec Accel;
 		Vec Grav;
 
-		Vec ShortSmoothAccel = Vec();
-		Vec ShortShakinessAccel = Vec();
-		Vec LongSmoothAccel = Vec();
+		Vec SmoothAccel = Vec();
+		Vec ShakinessAccel = Vec();
 		const float ShortSteadinessHalfTime = 0.25f;
 		const float LongSteadinessHalfTime = 1.f;
 
@@ -548,9 +547,8 @@ namespace GamepadMotionHelpers
 		Quaternion.Set(1.f, 0.f, 0.f, 0.f);
 		Accel.Set(0.f, 0.f, 0.f);
 		Grav.Set(0.f, 0.f, 0.f);
-		ShortSmoothAccel.Set(0.f, 0.f, 0.f);
-		ShortShakinessAccel.Set(0.f, 0.f, 0.f);
-		LongSmoothAccel.Set(0.f, 0.f, 0.f);
+		SmoothAccel.Set(0.f, 0.f, 0.f);
+		ShakinessAccel.Set(0.f, 0.f, 0.f);
 	}
 
 	/// <summary>
@@ -597,12 +595,12 @@ namespace GamepadMotionHelpers
 			Vec absoluteAccel = accel * Quaternion;
 			//printf("Absolute Accel: %.4f %.4f %.4f\n",
 			//	absoluteAccel.x, absoluteAccel.y, absoluteAccel.z);
-			const float shortSmoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
-			ShortShakinessAccel = Vec().Lerp(ShortShakinessAccel, shortSmoothFactor);
-			ShortShakinessAccel = ShortShakinessAccel.Max((absoluteAccel - ShortSmoothAccel).Abs());
-			ShortSmoothAccel = absoluteAccel.Lerp(ShortSmoothAccel, shortSmoothFactor);
+			const float SmoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
+			ShakinessAccel = Vec().Lerp(ShakinessAccel, SmoothFactor);
+			ShakinessAccel = ShakinessAccel.Max((absoluteAccel - SmoothAccel).Abs());
+			SmoothAccel = absoluteAccel.Lerp(SmoothAccel, SmoothFactor);
 
-			const float shakiness = ShortShakinessAccel.Length();
+			const float shakiness = ShakinessAccel.Length();
 			//printf("Shakiness: %.4f\n", shakiness);
 
 			// update grav by rotation
@@ -645,85 +643,13 @@ namespace GamepadMotionHelpers
 				Grav = accelNorm * -gravityLength;
 			}
 
-			// simple complementary filter
-			absoluteAccel = ShortSmoothAccel;
-			const Vec gravityDirection = -absoluteAccel.Normalized();
+			const Vec gravityDirection = Grav * Quaternion.Inverse(); // absolute gravity direction
 			const float errorAngle = acosf(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection));
+			const Vec flattened = Vec(0.0f, -1.0f, 0.0f).Cross(gravityDirection).Normalized();
+			Quat correctionQuat = AngleAxis(errorAngle, flattened.x, flattened.y, flattened.z);
+			Quaternion = correctionQuat * Quaternion;
 			
-			const Vec flattened = gravityDirection.Cross(Vec(0.0f, -1.0f, 0.0f)).Normalized();
-			//const float MinimumCorrectionRate = 0.087f;
-			//const float MinimumCorrectionRate = 0.02f;
-			const float MinimumCorrectionRate = 0.f;
-			const float SlowCorrectionFactor = 1.f;
-			const float FastCorrectionFactor = 0.1f;
-			const float FastCorrectionThreshold = 0.1f * deltaTime;
-			const float CorrectionRate = SlowCorrectionFactor + std::clamp(angle / FastCorrectionThreshold, 0.f, 1.f) * (FastCorrectionFactor - SlowCorrectionFactor);
-			const float maxCorrectionThisSample = std::max(angle * CorrectionRate, MinimumCorrectionRate * deltaTime) + CorrectionAngleLeftover; // angle already multiplied by time step
-
-			if (errorAngle > maxCorrectionThisSample)
-			{
-				Quat correctionQuat = AngleAxis(maxCorrectionThisSample, flattened.x, flattened.y, flattened.z);
-				Quaternion = correctionQuat * Quaternion;
-
-				CorrectionAngleLeftover = std::max(0.f, maxCorrectionThisSample - acosf(correctionQuat.w) * 2.f);
-			}
-			else
-			{
-				Quat correctionQuat = AngleAxis(errorAngle, flattened.x, flattened.y, flattened.z);
-				Quaternion = correctionQuat * Quaternion;
-
-				CorrectionAngleLeftover = std::max(0.f, errorAngle - acosf(correctionQuat.w) * 2.f);
-			}
-			
-			//Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
 			Accel = accel + Grav;
-
-			//const float longSmoothFactor = LongSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / LongSteadinessHalfTime);
-			//LongSmoothAccel = absoluteAccel.Lerp(LongSmoothAccel, longSmoothFactor);
-			////printf(" Gravity Box Size: %.4f _ ", gravityBoxSize.Length());
-			//if ((LongSmoothAccel - ShortSmoothAccel).LengthSquared() <= steadyGravityThreshold*steadyGravityThreshold)
-			//{
-			//	/*if (TimeCorrecting == 0.f)
-			//	{
-			//		printf("Gravity Steady\n");
-			//	}/**/
-			//	TimeCorrecting += deltaTime;
-			//
-			//	absoluteAccel = ShortSmoothAccel;
-			//	const Vec gravityDirection = -absoluteAccel.Normalized();
-			//	const Vec expectedGravity = Vec(0.0f, -1.0f, 0.0f) * Quaternion.Inverse();
-			//	const float errorAngle = acosf(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection)) * 180.0f / (float)M_PI;
-			//
-			//	const Vec flattened = gravityDirection.Cross(Vec(0.0f, -1.0f, 0.0f)).Normalized();
-			//
-			//	if (errorAngle > 0.0f)
-			//	{
-			//		const float correctFactor = gravityCorrectHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / gravityCorrectHalfTime);
-			//		float confidentSmoothCorrect = errorAngle;
-			//		confidentSmoothCorrect *= 1.0f - correctFactor;
-			//
-			//		if (TimeCorrecting < gravityCorrectEaseInTime)
-			//		{
-			//			confidentSmoothCorrect *= TimeCorrecting / gravityCorrectEaseInTime;
-			//		}
-			//
-			//		Quaternion = AngleAxis(confidentSmoothCorrect * (float)M_PI / 180.0f, flattened.x, flattened.y, flattened.z) * Quaternion;
-			//	}
-			//
-			//	Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
-			//	Accel = accel + Grav; // gravity won't be shaky. accel might. so let's keep using the quaternion's calculated gravity vector.
-			//}
-			//else
-			//{
-			//	/*if (TimeCorrecting > 0.f)
-			//	{
-			//		printf("Gravity Shaken\n");
-			//	}/**/
-			//
-			//	TimeCorrecting = 0.0f;
-			//	Grav = Vec(0.0f, -gravityLength, 0.0f) * Quaternion.Inverse();
-			//	Accel = accel + Grav;
-			//}
 		}
 		else
 		{
@@ -1129,6 +1055,13 @@ void GamepadMotion::Reset()
 void GamepadMotion::ProcessMotion(float gyroX, float gyroY, float gyroZ,
 	float accelX, float accelY, float accelZ, float deltaTime)
 {
+	if (gyroX == 0.f && gyroY == 0.f && gyroZ == 0.f &&
+		accelX == 0.f && accelY == 0.f && accelZ == 0.f)
+	{
+		// all zeroes are almost certainly not valid inputs
+		return;
+	}
+
 	float accelMagnitude = sqrtf(accelX * accelX + accelY * accelY + accelZ * accelZ);
 
 	if (IsCalibrating)
