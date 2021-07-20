@@ -133,11 +133,6 @@ namespace GamepadMotionHelpers
 		const float ShortSteadinessHalfTime = 0.25f;
 		const float LongSteadinessHalfTime = 1.f;
 
-		float TimeCorrecting = 0.f;
-
-		float CorrectionAngleLeftover = 0.f;
-		float RotationAngleLeftover = 0.f;
-
 		Motion();
 		void Reset();
 		void Update(float inGyroX, float inGyroY, float inGyroZ, float inAccelX, float inAccelY, float inAccelZ, float gravityLength, float deltaTime);
@@ -580,11 +575,9 @@ namespace GamepadMotionHelpers
 		const float angle = angleSpeed * deltaTime;
 
 		// rotate
-		// we're assuming leftovers from the previous frame are still in the same axis. Could not make this assumption and do a little more work?
-		Quat rotation = AngleAxis(angle + RotationAngleLeftover, axis.x, axis.y, axis.z);
+		Quat rotation = AngleAxis(angle, axis.x, axis.y, axis.z);
 		Quaternion *= rotation; // do it this way because it's a local rotation, not global
 
-		RotationAngleLeftover = std::max(0.f, angle - acosf(rotation.w) * 2.f);
 		//printf("Quat: %.4f %.4f %.4f %.4f _",
 		//	Quaternion.w, Quaternion.x, Quaternion.y, Quaternion.z);
 		float accelMagnitude = accel.Length();
@@ -653,7 +646,6 @@ namespace GamepadMotionHelpers
 		}
 		else
 		{
-			TimeCorrecting = 0.0f;
 			Accel.Set(0.0f, 0.0f, 0.0f);
 		}
 		Quaternion.Normalize();
