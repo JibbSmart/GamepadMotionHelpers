@@ -129,7 +129,7 @@ namespace GamepadMotionHelpers
 		Vec Grav;
 
 		Vec SmoothAccel = Vec();
-		Vec ShakinessAccel = Vec();
+		float Shakiness = 0.f;
 		const float ShortSteadinessHalfTime = 0.25f;
 		const float LongSteadinessHalfTime = 1.f;
 
@@ -543,7 +543,7 @@ namespace GamepadMotionHelpers
 		Accel.Set(0.f, 0.f, 0.f);
 		Grav.Set(0.f, 0.f, 0.f);
 		SmoothAccel.Set(0.f, 0.f, 0.f);
-		ShakinessAccel.Set(0.f, 0.f, 0.f);
+		Shakiness = 0.f;
 	}
 
 	/// <summary>
@@ -584,17 +584,16 @@ namespace GamepadMotionHelpers
 		if (accelMagnitude > 0.0f)
 		{
 			const Vec accelNorm = accel / accelMagnitude;
-			// world space accel for comparing over time regardless of rotation
-			Vec absoluteAccel = accel * Quaternion;
+			// account for rotation when tracking smoothed acceleration
+			SmoothAccel *= rotation.Inverse();
 			//printf("Absolute Accel: %.4f %.4f %.4f\n",
 			//	absoluteAccel.x, absoluteAccel.y, absoluteAccel.z);
-			const float SmoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
-			ShakinessAccel = Vec().Lerp(ShakinessAccel, SmoothFactor);
-			ShakinessAccel = ShakinessAccel.Max((absoluteAccel - SmoothAccel).Abs());
-			SmoothAccel = absoluteAccel.Lerp(SmoothAccel, SmoothFactor);
+			const float smoothFactor = ShortSteadinessHalfTime <= 0.f ? 0.f : exp2f(-deltaTime / ShortSteadinessHalfTime);
+			Shakiness *= smoothFactor;
+			Shakiness = std::max(Shakiness, (accel - SmoothAccel).Length());
+			SmoothAccel = accel.Lerp(SmoothAccel, smoothFactor);
 
-			const float shakiness = ShakinessAccel.Length();
-			//printf("Shakiness: %.4f\n", shakiness);
+			//printf("Shakiness: %.4f\n", Shakiness);
 
 			// update grav by rotation
 			Grav *= rotation.Inverse();
@@ -605,11 +604,11 @@ namespace GamepadMotionHelpers
 			float gravCorrectionSpeed;
 			if (gravityCorrectionShakinessMinThreshold < gravityCorrectionShakinessMaxThreshold)
 			{
-				gravCorrectionSpeed = gravityCorrectionStillSpeed + (gravityCorrectionShakySpeed - gravityCorrectionStillSpeed) * std::clamp((shakiness - gravityCorrectionShakinessMinThreshold) / (gravityCorrectionShakinessMaxThreshold - gravityCorrectionShakinessMinThreshold), 0.f, 1.f);
+				gravCorrectionSpeed = gravityCorrectionStillSpeed + (gravityCorrectionShakySpeed - gravityCorrectionStillSpeed) * std::clamp((Shakiness - gravityCorrectionShakinessMinThreshold) / (gravityCorrectionShakinessMaxThreshold - gravityCorrectionShakinessMinThreshold), 0.f, 1.f);
 			}
 			else
 			{
-				gravCorrectionSpeed = shakiness < gravityCorrectionShakinessMaxThreshold ? gravityCorrectionStillSpeed : gravityCorrectionShakySpeed;
+				gravCorrectionSpeed = Shakiness < gravityCorrectionShakinessMaxThreshold ? gravityCorrectionStillSpeed : gravityCorrectionShakySpeed;
 			}
 			// we also limit it to be no faster than a given proportion of the gyro rate, or the minimum gravity correction speed
 			const float gyroGravCorrectionLimit = std::max(angleSpeed * gravityCorrectionGyroFactor, gravityCorrectionMinimumSpeed);
@@ -646,7 +645,8 @@ namespace GamepadMotionHelpers
 		}
 		else
 		{
-			Accel.Set(0.0f, 0.0f, 0.0f);
+			Grav *= rotation.Inverse();
+			Accel = Grav;
 		}
 		Quaternion.Normalize();
 	}
