@@ -205,15 +205,9 @@ public:
 	float SensorFusionCalibrationEaseInTime = 3.f;
 	float SensorFusionCalibrationHalfTime = 0.1f;
 
-	float SteadyGravityThreshold = 0.3f;
-	float GravityCorrectEaseInTime = 0.25f;
-	float GravityCorrectHalfTime = 0.25f;
-
 	float GravityCorrectionShakinessMaxThreshold = 0.4f;
 	float GravityCorrectionShakinessMinThreshold = 0.01f;
 
-	//float GravityCorrectionStillSpeed = 0.1f;
-	//float GravityCorrectionShakySpeed = 0.001f;
 	float GravityCorrectionStillSpeed = 1.f;
 	float GravityCorrectionShakySpeed = 0.1f;
 
@@ -557,9 +551,6 @@ namespace GamepadMotionHelpers
 		}
 
 		// get settings
-		const float steadyGravityThreshold = Settings->SteadyGravityThreshold;
-		const float gravityCorrectEaseInTime = Settings->GravityCorrectEaseInTime;
-		const float gravityCorrectHalfTime = Settings->GravityCorrectHalfTime;
 		const float gravityCorrectionShakinessMinThreshold = Settings->GravityCorrectionShakinessMinThreshold;
 		const float gravityCorrectionShakinessMaxThreshold = Settings->GravityCorrectionShakinessMaxThreshold;
 		const float gravityCorrectionStillSpeed = Settings->GravityCorrectionStillSpeed;
