@@ -1,6 +1,6 @@
-// Copyright (c) 2020-2021 Julian "Jibb" Smart
+// Copyright (c) 2020-2023 Julian "Jibb" Smart
 // Released under the MIT license. See https://github.com/JibbSmart/GamepadMotionHelpers/blob/main/LICENSE for more info
-// Version 6
+// Version 7
 
 #pragma once
 
@@ -233,6 +233,8 @@ public:
 	void GetGravity(float& x, float& y, float& z);
 	void GetProcessedAcceleration(float& x, float& y, float& z);
 	void GetOrientation(float& w, float& x, float& y, float& z);
+	void GetPlayerSpaceGyro(float& x, float& y, const float yawRelaxFactor = 1.41f);
+	void GetWorldSpaceGyro(float& x, float& y, const float sideReductionThreshold = 0.125f);
 
 	// gyro calibration functions
 	void StartContinuousCalibration();
@@ -630,7 +632,7 @@ namespace GamepadMotionHelpers
 			const float errorAngle = acosf(std::clamp(Vec(0.0f, -1.0f, 0.0f).Dot(gravityDirection), -1.f, 1.f));
 			const Vec flattened = Vec(0.0f, -1.0f, 0.0f).Cross(gravityDirection);
 			Quat correctionQuat = AngleAxis(errorAngle, flattened.x, flattened.y, flattened.z);
-			Quaternion = correctionQuat * Quaternion;
+			Quaternion = Quaternion * correctionQuat;
 			
 			Accel = accel + Grav;
 		}
@@ -1117,6 +1119,46 @@ void GamepadMotion::GetOrientation(float& w, float& x, float& y, float& z)
 	x = Motion.Quaternion.x;
 	y = Motion.Quaternion.y;
 	z = Motion.Quaternion.z;
+}
+
+void GamepadMotion::GetPlayerSpaceGyro(float& x, float& y, const float yawRelaxFactor)
+{
+	// take gravity into account without taking on any error from gravity. Explained in depth at http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained#toc7
+	const float worldYaw = -(Motion.Grav.y * Gyro.y + Motion.Grav.z * Gyro.z);
+	const float worldYawSign = worldYaw < 0.f ? -1.f : 1.f;
+	y = worldYawSign * std::min(std::abs(worldYaw) * yawRelaxFactor, sqrtf(Gyro.y * Gyro.y + Gyro.z * Gyro.z));
+	x = Gyro.x;
+}
+
+void GamepadMotion::GetWorldSpaceGyro(float& x, float& y, const float sideReductionThreshold)
+{
+	// use the gravity direction as the yaw axis, and derive an appropriate pitch axis. Explained in depth at http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained#toc6
+	const float worldYaw = -Motion.Grav.Dot(Gyro);
+	// project local pitch axis (X) onto gravity plane
+	const float gravDotPitchAxis = Motion.Grav.x;
+	GamepadMotionHelpers::Vec pitchAxis(1.f - Motion.Grav.x * gravDotPitchAxis,
+		-Motion.Grav.y * gravDotPitchAxis,
+		-Motion.Grav.z * gravDotPitchAxis);
+	// normalize
+	const float pitchAxisLengthSquared = pitchAxis.LengthSquared();
+	if (pitchAxisLengthSquared > 0.f)
+	{
+		const float pitchAxisLength = sqrtf(pitchAxisLengthSquared);
+		const float lengthReciprocal = 1.f / pitchAxisLength;
+		pitchAxis *= lengthReciprocal;
+
+		const float flatness = std::abs(Motion.Grav.y);
+		const float upness = std::abs(Motion.Grav.z);
+		const float sideReduction = sideReductionThreshold <= 0.f ? 1.f : std::clamp((std::max(flatness, upness) - sideReductionThreshold) / sideReductionThreshold, 0.f, 1.f);
+
+		x = sideReduction * pitchAxis.Dot(Gyro);
+	}
+	else
+	{
+		x = 0.f;
+	}
+
+	y = worldYaw;
 }
 
 // gyro calibration functions
