@@ -1121,7 +1121,7 @@ inline void GamepadMotion::GetOrientation(float& w, float& x, float& y, float& z
 	z = Motion.Quaternion.z;
 }
 
-void GamepadMotion::GetPlayerSpaceGyro(float& x, float& y, const float yawRelaxFactor)
+inline void GamepadMotion::GetPlayerSpaceGyro(float& x, float& y, const float yawRelaxFactor)
 {
 	// take gravity into account without taking on any error from gravity. Explained in depth at http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained#toc7
 	const float worldYaw = -(Motion.Grav.y * Gyro.y + Motion.Grav.z * Gyro.z);
@@ -1130,7 +1130,7 @@ void GamepadMotion::GetPlayerSpaceGyro(float& x, float& y, const float yawRelaxF
 	x = Gyro.x;
 }
 
-void GamepadMotion::GetWorldSpaceGyro(float& x, float& y, const float sideReductionThreshold)
+inline void GamepadMotion::GetWorldSpaceGyro(float& x, float& y, const float sideReductionThreshold)
 {
 	// use the gravity direction as the yaw axis, and derive an appropriate pitch axis. Explained in depth at http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained#toc6
 	const float worldYaw = -Motion.Grav.Dot(Gyro);
