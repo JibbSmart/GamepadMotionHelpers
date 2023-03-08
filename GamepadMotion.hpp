@@ -8,6 +8,11 @@
 #include <math.h>
 #include <algorithm> // std::min, std::max and std::clamp
 
+#define GMH_STOCHASTIC_SMALL_ROTATIONS_ENABLED
+#ifdef GMH_STOCHASTIC_SMALL_ROTATIONS_ENABLED
+#include <cstdlib> // std::rand
+#endif
+
 // You don't need to look at these. These will just be used internally by the GamepadMotion class declared below.
 // You can ignore anything in namespace GamepadMotionHelpers.
 class GamepadMotionSettings;
@@ -565,7 +570,20 @@ namespace GamepadMotionHelpers
 		const Vec axis = Vec(inGyroX, inGyroY, inGyroZ);
 		const Vec accel = Vec(inAccelX, inAccelY, inAccelZ);
 		const float angleSpeed = axis.Length() * (float)M_PI / 180.0f;
-		const float angle = angleSpeed * deltaTime;
+		float angle = angleSpeed * deltaTime;
+
+#ifdef GMH_STOCHASTIC_SMALL_ROTATIONS_ENABLED
+		// because cos angle for small angles will hit 1 very quickly and do nothing for slow rotations, we go stochastic for small values
+		static const float stochasticThreshold = 0.0005f;
+		const float absAngle = std::abs(angle);
+		if (absAngle < stochasticThreshold && absAngle > 0.0f)
+		{
+			const float random01 = rand() / (RAND_MAX + 1.0f);
+			const float angleSign = angle > 0.0f ? 1.0f : -1.0f;
+			const float probability = absAngle / stochasticThreshold;
+			angle = angleSign * (random01 < probability ? stochasticThreshold : 0.0f);
+		}
+#endif
 
 		// rotate
 		Quat rotation = AngleAxis(angle, axis.x, axis.y, axis.z);
@@ -1244,3 +1262,5 @@ inline void GamepadMotion::GetCalibratedSensor(float& gyroOffsetX, float& gyroOf
 	gyroOffsetZ = GyroCalibration.Z * inverseSamples;
 	accelMagnitude = GyroCalibration.AccelMagnitude * inverseSamples;
 }
+
+#undef GMH_STOCHASTIC_SMALL_ROTATIONS_ENABLED
