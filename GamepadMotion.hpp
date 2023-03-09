@@ -568,7 +568,7 @@ namespace GamepadMotionHelpers
 		const Vec axis = Vec(inGyroX, inGyroY, inGyroZ);
 		const Vec accel = Vec(inAccelX, inAccelY, inAccelZ);
 		const float angleSpeed = axis.Length() * (float)M_PI / 180.0f;
-		float angle = angleSpeed * deltaTime;
+		const float angle = angleSpeed * deltaTime;
 
 		// rotate
 		Quat rotation = AngleAxis(angle, axis.x, axis.y, axis.z);
