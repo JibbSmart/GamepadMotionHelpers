@@ -65,6 +65,8 @@ If you aren't sure what to choose, I'd suggest using the combined ```Calibration
 
 **TODO** This is a clunky way to let the user set up what is obviously the best solution. Maybe I should just call it "hybrid" or something and be done with it?
 
+Auto-calibration can also be used to communicate manual calibration to the player. ```GetAutoCalibrationIsSteady()``` will tell you whether GamepadMotionHelpers thinks the controller is currently being held steady (if auto-calibration is enabled). ```GetAutoCalibrationConfidence()``` will tell you how confident GamepadMotionHelpers is that it has a good calibration value from auto-calibration, from 0-1. Higher confidence means that new calibration changes will be applied more gradually. You can use these functions to detect when a controller needs to be calibrated, prompt the player to put their controller down, detect when they have put their controller down, and show progress for calibration (default 1 second once it starts). You can also override the confidence yourself (```SetAutoCalibrationConfidence()```), and resetting calibration will reset confidence to 0. How quickly confidence grows as well as other calibration settings can be customised in **GamepadMotionSettings**.
+
 ## In the Wild
 GamepadMotionHelpers is currently used in:
 - [JoyShockMapper](https://github.com/Electronicks/JoyShockMapper)
