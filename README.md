@@ -72,5 +72,6 @@ GamepadMotionHelpers is currently used in:
 - [JoyShockMapper](https://github.com/Electronicks/JoyShockMapper)
 - [JoyShockLibrary](https://github.com/JibbSmart/JoyShockLibrary)
 - JoyShockOverlay
+- [Godot Engine](https://godotengine.org/)
 
 If you know of any other games or applications using GamepadMotionHelpers, please let me know!
